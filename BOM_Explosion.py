@@ -3,10 +3,10 @@ BOM_Explosion.py
 
 Core logic for the BOM Explosion tool.
 
-Responsibilities:
-- Handle upload of BOM data (CSV/Excel/etc.).
-- Parse uploaded data into an internal representation.
-- Prepare a "Topology" view (graph-like structure) once data are loaded.
+Parser expects an indented BOM with:
+- 'Level'
+- 'Component number'
+and a quantity column like 'Comp. Qty (BUn)'.
 """
 
 from dataclasses import dataclass, field
@@ -38,47 +38,102 @@ class BOMTopology:
     edges: List[Dict[str, Any]] = field(default_factory=list)  # e.g. {"from": parent, "to": child, "qty": 2}
 
 
-# ---------- Core Parsing Logic ----------
+# ---------- Core Parsing Logic (NOW: Level / Component number) ----------
 
 def parse_bom_dataframe(df) -> List[BOMItem]:
     """
-    Convert a tabular BOM (e.g. pandas DataFrame) into a list of BOMItem.
+    Parse an indented BOM where hierarchy is given by 'Level' and components
+    by 'Component number'.
 
-    Expected minimal columns:
-    - 'Parent'
-    - 'Child'
-    Optionally:
-    - 'Quantity' (defaults to 1 if missing)
-    - any other columns stored in BOMItem.extra
+    Assumptions:
+    - Column 'Level' is numeric (1,2,3,...) representing indentation.
+    - Column 'Component number' is the node identifier (string).
+    - Column 'Comp. Qty (BUn)' (or similar) contains quantity per parent.
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Dataframe containing BOM data.
-
-    Returns
-    -------
-    List[BOMItem]
+    Parent-finding rule:
+    - For a row at level L (L > 1), its parent is the closest previous row
+      with Level < L.
+    - For Level 1:
+        - The first Level 1 row is treated as the global root (no parent edge).
+        - Additional Level 1 rows are children of that root.
     """
-    required_cols = {"Parent", "Child"}
+    required_cols = {"Level", "Component number"}
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns in BOM data: {missing}")
 
+    # Work on a copy and ensure Level is integer
+    df = df.copy()
+    df["Level"] = df["Level"].astype(int)
+
+    # Detect a quantity column
+    qty_col = None
+    for cand in ["Comp. Qty (BUn)", "Comp. Qty", "Quantity"]:
+        if cand in df.columns:
+            qty_col = cand
+            break
+
     bom_items: List[BOMItem] = []
+
+    # Stack of ancestors: list of dicts {"level": int, "comp": str}
+    stack: List[Dict[str, Any]] = []
+
+    root_label: Optional[str] = None
+
     for _, row in df.iterrows():
-        parent = str(row["Parent"])
-        child = str(row["Child"])
-        quantity = float(row.get("Quantity", 1))
+        level = int(row["Level"])
+        comp = str(row["Component number"])
+
+        # Quantity: from qty_col or default 1
+        if qty_col is not None:
+            raw_qty = row[qty_col]
+            try:
+                # Handle European decimal "," if present
+                quantity = float(str(raw_qty).replace(",", "."))
+            except Exception:
+                quantity = 1.0
+        else:
+            quantity = 1.0
 
         # Everything else goes into 'extra'
         extra = {
             col: row[col]
             for col in df.columns
-            if col not in {"Parent", "Child", "Quantity"}
+            if col not in {"Level", "Component number"}
         }
 
-        bom_items.append(BOMItem(parent=parent, child=child, quantity=quantity, extra=extra))
+        if level == 1:
+            # First Level 1 is the root of the explosion
+            if root_label is None:
+                root_label = comp
+                stack = [{"level": level, "comp": comp}]
+                # No parent edge for the true root
+                continue
+            else:
+                # Other Level 1 rows: treat them as direct children of the root
+                parent = root_label
+                bom_items.append(
+                    BOMItem(parent=parent, child=comp, quantity=quantity, extra=extra)
+                )
+                stack = [{"level": level, "comp": comp}]
+                continue
+
+        # For level > 1, find the parent as closest previous with lower level
+        while stack and stack[-1]["level"] >= level:
+            stack.pop()
+
+        if not stack:
+            # Fallback: attach to root if stack got emptied
+            parent = root_label if root_label is not None else "ROOT"
+        else:
+            parent = stack[-1]["comp"]
+
+        bom_items.append(
+            BOMItem(parent=parent, child=comp, quantity=quantity, extra=extra)
+        )
+
+        # Push current node to stack as potential parent for deeper levels
+        stack.append({"level": level, "comp": comp})
 
     return bom_items
 
@@ -86,17 +141,6 @@ def parse_bom_dataframe(df) -> List[BOMItem]:
 def build_topology(bom_items: List[BOMItem]) -> BOMTopology:
     """
     Build a topology object from BOM items.
-
-    This is the backbone of the "Topology" tab: once the BOM is loaded and parsed,
-    we construct a graph-like representation that the UI can render.
-
-    Parameters
-    ----------
-    bom_items : List[BOMItem]
-
-    Returns
-    -------
-    BOMTopology
     """
     nodes_set = set()
     edges: List[Dict[str, Any]] = []
@@ -140,6 +184,7 @@ class BOMExplosionApp:
         """
         Called by the UI after the user uploads a file
         and it has been read into a pandas.DataFrame.
+        Uses the Level/Component-number-based parser.
         """
         self._raw_df = df
         self._bom_items = parse_bom_dataframe(df)
