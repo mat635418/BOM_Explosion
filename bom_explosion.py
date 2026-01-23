@@ -25,7 +25,7 @@ class BOMExplosion:
         self.bom_data = bom_data
         
     def explode(self, sku: str, quantity: float = 1.0, level: int = 0, 
-                visited: Set[str] = None) -> List[Tuple[int, str, float, str]]:
+                path: Set[str] = None) -> List[Tuple[int, str, float, str]]:
         """
         Recursively explode a SKU into all its components.
         
@@ -33,15 +33,23 @@ class BOMExplosion:
             sku: The SKU to explode
             quantity: The quantity of this SKU needed
             level: Current depth level in the BOM tree
-            visited: Set of SKUs already visited (to detect circular references)
+            path: Set of SKUs in the current path (to detect circular references)
         
         Returns:
             List of tuples: (level, sku, quantity, item_type)
         """
-        if visited is None:
-            visited = set()
+        if path is None:
+            path = set()
         
         result = []
+        
+        # Check for circular reference in current path
+        if sku in path:
+            result.append((level, f"[CIRCULAR REFERENCE: {sku}]", quantity, "Error"))
+            return result
+        
+        # Add to current path
+        new_path = path | {sku}
         
         # Determine item type
         if sku not in self.bom_data or not self.bom_data[sku]:
@@ -54,19 +62,11 @@ class BOMExplosion:
         # Add current item
         result.append((level, sku, quantity, item_type))
         
-        # Check for circular reference
-        if sku in visited:
-            result.append((level + 1, f"[CIRCULAR REFERENCE DETECTED for {sku}]", 0, "Error"))
-            return result
-        
-        # Mark as visited
-        visited.add(sku)
-        
         # Explode components if they exist
         if sku in self.bom_data:
             for component_sku, component_qty in self.bom_data[sku]:
                 total_qty = quantity * component_qty
-                component_result = self.explode(component_sku, total_qty, level + 1, visited.copy())
+                component_result = self.explode(component_sku, total_qty, level + 1, new_path)
                 result.extend(component_result)
         
         return result
