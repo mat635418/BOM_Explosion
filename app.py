@@ -3,6 +3,7 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
+import os
 
 from BOM_Explosion import BOMExplosionApp
 
@@ -14,7 +15,7 @@ if "bom_app" not in st.session_state:
 
 app = st.session_state["bom_app"]
 
-st.title("BOM Explosion Tool - v0.05")
+st.title("BOM Explosion Tool")
 
 st.markdown(
     """
@@ -63,44 +64,30 @@ with tab_topology:
     if app.has_topology():
         topology = app.get_topology()
 
-        # --- Parameters / controls above the graph ---
-        with st.expander("Graph parameters", expanded=True):
-            col_p1, col_p2, col_p3 = st.columns([1, 1, 1])
+        # --- Compact parameters / info above the graph ---
+        col_p1, col_p2 = st.columns([1, 1])
+        with col_p1:
+            st.checkbox(
+                "Enable physics layout",
+                value=True,
+                key="physics_enabled",
+                help=(
+                    "When enabled, nodes move dynamically to a readable layout. "
+                    "Turn off if you want a stable, non-moving diagram."
+                ),
+            )
+        with col_p2:
+            st.checkbox(
+                "Show raw nodes/edges table",
+                value=False,
+                key="show_raw_data",
+                help="Display the underlying node and edge lists for debugging or export.",
+            )
 
-            with col_p1:
-                physics_enabled = st.checkbox(
-                    "Enable physics layout",
-                    value=True,
-                    help=(
-                        "When enabled, nodes move under simulated forces to reach a readable layout. "
-                        "Turn it off for a static layout once you are happy with the positions."
-                    ),
-                )
+        physics_enabled = st.session_state["physics_enabled"]
+        show_raw_data = st.session_state["show_raw_data"]
 
-            with col_p2:
-                height_px = st.slider(
-                    "Graph height (px)",
-                    min_value=600,
-                    max_value=1500,
-                    value=1200,  # was ~700–750; now extended by ~500px
-                    step=50,
-                    help=(
-                        "Increase the height to see more of the network at once. "
-                        "Useful for large BOMs with many levels."
-                    ),
-                )
-
-            with col_p3:
-                show_raw_data = st.checkbox(
-                    "Show raw nodes/edges table",
-                    value=False,
-                    help=(
-                        "When checked, displays the underlying lists of nodes and edges below. "
-                        "Useful for debugging or exporting."
-                    ),
-                )
-
-        # --- Optional: raw nodes / edges ---
+        # Optional raw data
         if show_raw_data:
             with st.expander("Nodes and edges (raw data)", expanded=False):
                 col1, col2 = st.columns(2)
@@ -120,30 +107,75 @@ with tab_topology:
             parent = edge["from"]
             child = edge["to"]
             qty = edge.get("quantity", 1)
-            # Use quantity as edge label
             G.add_edge(parent, child, quantity=qty, title=f"Qty: {qty}")
 
         # --- Render with PyVis ---
-        net = Network(height=f"{height_px}px", width="100%", directed=True)
+        # We'll set a placeholder height; JS will expand to viewport height.
+        net = Network(height="600px", width="100%", directed=True)
 
-        # Optional: basic styling / better default appearance
-        net.barnes_hut()
+        # Favor a horizontal / layered structure rather than a sphere
+        net.set_options(
+            """
+            var options = {
+              layout: {
+                hierarchical: {
+                  enabled: true,
+                  direction: 'LR',   // Left-to-Right
+                  sortMethod: 'hubsize',
+                  levelSeparation: 150,
+                  nodeSpacing: 150,
+                  treeSpacing: 200
+                }
+              },
+              physics: {
+                enabled: true,
+                hierarchicalRepulsion: {
+                  nodeDistance: 150,
+                  centralGravity: 0.0,
+                  springLength: 100,
+                  springConstant: 0.01,
+                  damping: 0.09
+                }
+              }
+            }
+            """
+        )
+
         net.from_nx(G)
 
-        # Physics on/off from the checkbox
+        # Physics toggle from checkbox
         net.toggle_physics(physics_enabled)
-
-        # Optionally expose some buttons (layout/physics)
-        net.show_buttons(filter_=["physics"])
 
         html_file = "bom_topology.html"
         net.save_graph(html_file)
 
+        # Read HTML and wrap it so it fills the visible screen height
         with open(html_file, "r", encoding="utf-8") as f:
             html = f.read()
 
+        # Inject small JS to resize the network container to viewport height
+        # minus some offset for header and controls.
+        resize_script = """
+        <script type="text/javascript">
+        function resizeNetwork() {
+            var net = document.getElementById('mynetwork');
+            if (!net) return;
+            var offset = 200;  // space for title, tabs, controls
+            var h = window.innerHeight - offset;
+            if (h < 400) { h = 400; }
+            net.style.height = h + "px";
+        }
+        window.addEventListener('load', resizeNetwork);
+        window.addEventListener('resize', resizeNetwork);
+        </script>
+        """
+
+        # Ensure we only inject the script once and that 'mynetwork' is the container id used by pyvis
+        final_html = html.replace("</body>", f"{resize_script}</body>")
+
         st.subheader("Graph view")
-        components.html(html, height=height_px + 50, scrolling=True)
+        # Height here is just a fallback; JS will stretch to viewport
+        components.html(final_html, height=700, scrolling=False)
 
     else:
         st.info("Upload a BOM file to see the topology.")
