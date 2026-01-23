@@ -8,6 +8,18 @@ from BOM_Explosion import BOMExplosionApp
 
 st.set_page_config(page_title="BOM Explosion", layout="wide")
 
+# Reduce top padding / margin so content starts higher on the page
+st.markdown(
+    """
+    <style>
+        .block-container {
+            padding-top: 1rem !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Keep a single global app instance
 if "bom_app" not in st.session_state:
     st.session_state["bom_app"] = BOMExplosionApp()
