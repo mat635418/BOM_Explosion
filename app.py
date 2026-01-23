@@ -3,7 +3,6 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
-import os
 
 from BOM_Explosion import BOMExplosionApp
 
@@ -31,7 +30,7 @@ st.markdown(
 uploaded_file = st.file_uploader(
     "Upload BOM file",
     type=["csv", "xlsx"],
-    help="Upload a BOM for one SKU. Supported formats: CSV, Excel."
+    help="Upload a BOM for one SKU. Supported formats: CSV, Excel.",
 )
 
 df = None
@@ -52,6 +51,9 @@ if uploaded_file is not None:
 # --- Tabs: Data / Topology ---
 tab_data, tab_topology = st.tabs(["Data", "Topology"])
 
+# =========================
+# DATA TAB
+# =========================
 with tab_data:
     st.subheader("Raw BOM data")
     if app.has_data():
@@ -59,6 +61,9 @@ with tab_data:
     else:
         st.info("Upload a BOM file to view data.")
 
+# =========================
+# TOPOLOGY TAB
+# =========================
 with tab_topology:
     st.subheader("Topology")
     if app.has_topology():
@@ -107,34 +112,35 @@ with tab_topology:
             parent = edge["from"]
             child = edge["to"]
             qty = edge.get("quantity", 1)
+            # quantity as edge title (tooltip)
             G.add_edge(parent, child, quantity=qty, title=f"Qty: {qty}")
 
         # --- Render with PyVis ---
-        # We'll set a placeholder height; JS will expand to viewport height.
+        # Initial height is a placeholder; JS will stretch to viewport height.
         net = Network(height="600px", width="100%", directed=True)
 
-        # Favor a horizontal / layered structure rather than a sphere
+        # Valid JSON options: hierarchical left-to-right layout
         net.set_options(
             """
-            var options = {
-              layout: {
-                hierarchical: {
-                  enabled: true,
-                  direction: 'LR',   // Left-to-Right
-                  sortMethod: 'hubsize',
-                  levelSeparation: 150,
-                  nodeSpacing: 150,
-                  treeSpacing: 200
+            {
+              "layout": {
+                "hierarchical": {
+                  "enabled": true,
+                  "direction": "LR",
+                  "sortMethod": "hubsize",
+                  "levelSeparation": 150,
+                  "nodeSpacing": 150,
+                  "treeSpacing": 200
                 }
               },
-              physics: {
-                enabled: true,
-                hierarchicalRepulsion: {
-                  nodeDistance: 150,
-                  centralGravity: 0.0,
-                  springLength: 100,
-                  springConstant: 0.01,
-                  damping: 0.09
+              "physics": {
+                "enabled": true,
+                "hierarchicalRepulsion": {
+                  "nodeDistance": 150,
+                  "centralGravity": 0.0,
+                  "springLength": 100,
+                  "springConstant": 0.01,
+                  "damping": 0.09
                 }
               }
             }
@@ -143,24 +149,22 @@ with tab_topology:
 
         net.from_nx(G)
 
-        # Physics toggle from checkbox
+        # Enable / disable physics from checkbox
         net.toggle_physics(physics_enabled)
 
         html_file = "bom_topology.html"
         net.save_graph(html_file)
 
-        # Read HTML and wrap it so it fills the visible screen height
         with open(html_file, "r", encoding="utf-8") as f:
             html = f.read()
 
-        # Inject small JS to resize the network container to viewport height
-        # minus some offset for header and controls.
+        # JS to resize the network container to viewport height
         resize_script = """
         <script type="text/javascript">
         function resizeNetwork() {
             var net = document.getElementById('mynetwork');
             if (!net) return;
-            var offset = 200;  // space for title, tabs, controls
+            var offset = 220;  // space for title, tabs, and controls
             var h = window.innerHeight - offset;
             if (h < 400) { h = 400; }
             net.style.height = h + "px";
@@ -170,11 +174,10 @@ with tab_topology:
         </script>
         """
 
-        # Ensure we only inject the script once and that 'mynetwork' is the container id used by pyvis
-        final_html = html.replace("</body>", f"{resize_script}</body>")
+        final_html = html.replace("</body>", resize_script + "</body>")
 
         st.subheader("Graph view")
-        # Height here is just a fallback; JS will stretch to viewport
+        # Height is a fallback; JS will adjust to viewport
         components.html(final_html, height=700, scrolling=False)
 
     else:
