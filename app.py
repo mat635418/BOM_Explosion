@@ -115,42 +115,23 @@ with tab_topology:
                     st.markdown("**Edges (Parent → Child relationships)**")
                     st.write(topology.edges)
 
-        # --- Build NetworkX graph with node levels ---
+        # --- Build NetworkX graph ---
         G = nx.DiGraph()
-
-        # We rely on BOM_Explosion keeping 'Level' in edge meta.
-        node_level = {}
-
-        for edge in topology.edges:
-            meta = edge.get("meta", {})
-            level_val = meta.get("Level", None)
-            try:
-                level_int = int(level_val)
-            except Exception:
-                level_int = 1
-            child = edge["to"]
-            if child not in node_level or level_int < node_level[child]:
-                node_level[child] = level_int
-
-        # Root nodes might never be "child"; default them to level 1
         for node in topology.nodes:
-            if node not in node_level:
-                node_level[node] = 1
-
-        for node in topology.nodes:
-            lvl = node_level.get(node, 1)
-            # store level as a node attribute (used later in JS)
-            G.add_node(node, label=node, level=lvl)
+            G.add_node(node, label=node)
 
         for edge in topology.edges:
             parent = edge["from"]
             child = edge["to"]
             qty = edge.get("quantity", 1)
+            # quantity as edge title (tooltip)
             G.add_edge(parent, child, quantity=qty, title=f"Qty: {qty}")
 
         # --- Render with PyVis ---
+        # Initial height is a placeholder; JS will stretch to viewport height.
         net = Network(height="600px", width="100%", directed=True)
 
+        # Inject physics_enabled directly into valid JSON options
         options_json = f"""
         {{
           "layout": {{
@@ -179,20 +160,14 @@ with tab_topology:
 
         net.from_nx(G)
 
-        # Export nodes / edges data so JS can access levels and parents
-        # PyVis already dumps this into the HTML as 'nodes' and 'edges' DataSet.
-
         html_file = "bom_topology.html"
         net.save_graph(html_file)
 
         with open(html_file, "r", encoding="utf-8") as f:
             html = f.read()
 
-        # JS:
-        #  - Initially hide nodes with level > 5
-        #  - On doubleClick on a node, reveal its children at next level
-        #  - Resize network to viewport height
-        js_script = """
+        # JS to resize the network container to viewport height
+        resize_script = """
         <script type="text/javascript">
         function resizeNetwork() {
             var net = document.getElementById('mynetwork');
@@ -202,73 +177,14 @@ with tab_topology:
             if (h < 400) { h = 400; }
             net.style.height = h + "px";
         }
-
-        function setupLevelVisibility() {
-            if (typeof network === 'undefined' || typeof nodes === 'undefined' || typeof edges === 'undefined') {
-                return;
-            }
-
-            var VISIBLE_MAX_LEVEL = 5;   // show levels 1–5
-            var MAX_LEVEL = 15;          // only expand up to this
-
-            // Helper to get node data by id
-            function getNode(nid) {
-                return nodes.get(nid);
-            }
-
-            // Initially hide all nodes with level > VISIBLE_MAX_LEVEL
-            nodes.get().forEach(function(n) {
-                var lvl = n.level || 1;
-                if (lvl > VISIBLE_MAX_LEVEL && lvl <= MAX_LEVEL) {
-                    nodes.update({id: n.id, hidden: true});
-                }
-            });
-
-            // On double-click, expand one more level under the clicked node
-            network.on("doubleClick", function(params) {
-                if (!params || !params.nodes || params.nodes.length === 0) {
-                    return;
-                }
-                var nid = params.nodes[0];
-                var node = getNode(nid);
-                if (!node) return;
-                var lvl = node.level || 1;
-                var targetLevel = lvl + 1;
-                if (targetLevel > MAX_LEVEL) {
-                    return;
-                }
-
-                // Find children edges whose from == nid and whose child node is at targetLevel
-                edges.get().forEach(function(e) {
-                    if (e.from === nid) {
-                        var child = getNode(e.to);
-                        if (child && (child.level || 1) === targetLevel) {
-                            nodes.update({id: child.id, hidden: false});
-                        }
-                    }
-                });
-
-                // Optional: fit again around the clicked node
-                // network.focus(nid, {scale: 1.0, animation: true});
-            });
-        }
-
-        window.addEventListener('load', function() {
-            resizeNetwork();
-            setTimeout(setupLevelVisibility, 500);  // wait for vis.js to init
-        });
+        window.addEventListener('load', resizeNetwork);
         window.addEventListener('resize', resizeNetwork);
         </script>
         """
 
-        final_html = html.replace("</body>", js_script + "</body>")
+        final_html = html.replace("</body>", resize_script + "</body>")
 
         st.subheader("Graph view")
-        st.caption(
-            "Levels 1–5 are shown. Levels 6–15 start collapsed; "
-            "double-click a node to expand its next level of children."
-        )
-
         # Height is a fallback; JS will adjust to viewport
         components.html(final_html, height=700, scrolling=False)
 
