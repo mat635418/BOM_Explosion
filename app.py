@@ -115,16 +115,58 @@ with tab_topology:
                     st.markdown("**Edges (Parent → Child relationships)**")
                     st.write(topology.edges)
 
-        # --- Build NetworkX graph ---
+        # --- Build NetworkX graph with level-based visibility ---
         G = nx.DiGraph()
+
+        # We rely on BOM_Explosion.parse_bom_dataframe keeping the original Level in meta
+        # meta["Level"] -> node level
+        # Show nodes up to level 5; hide 6–15 (collapsible)
+        VISIBLE_MAX_LEVEL = 5
+        COLLAPSIBLE_MIN_LEVEL = 6  # levels >= 6 are hidden by default
+
+        # First, compute node levels by inspecting edges meta (child Level)
+        node_level = {}
+        for edge in topology.edges:
+            meta = edge.get("meta", {})
+            level_val = meta.get("Level", None)
+            try:
+                level_int = int(level_val)
+            except Exception:
+                # If Level is missing or bad, default to 1
+                level_int = 1
+            child = edge["to"]
+            # Keep the minimum level observed for each node (closest to root)
+            if child not in node_level or level_int < node_level[child]:
+                node_level[child] = level_int
+
+        # Root / top-level nodes might not appear as children;
+        # assign them level 1 if unknown.
         for node in topology.nodes:
-            G.add_node(node, label=node)
+            if node not in node_level:
+                node_level[node] = 1
+
+        # Add nodes to graph with level attribute (for potential styling)
+        for node in topology.nodes:
+            lvl = node_level.get(node, 1)
+            G.add_node(node, label=node, level=lvl)
+
+        # Add edges but mark visibility based on child level
+        visible_edges = []
+        hidden_edges = []
 
         for edge in topology.edges:
             parent = edge["from"]
             child = edge["to"]
             qty = edge.get("quantity", 1)
-            # quantity as edge title (tooltip)
+            lvl = node_level.get(child, 1)
+
+            if lvl <= VISIBLE_MAX_LEVEL:
+                visible_edges.append((parent, child, qty))
+            else:
+                hidden_edges.append((parent, child, qty))
+
+        # Add only visible edges to the main graph
+        for parent, child, qty in visible_edges:
             G.add_edge(parent, child, quantity=qty, title=f"Qty: {qty}")
 
         # --- Render with PyVis ---
@@ -167,16 +209,17 @@ with tab_topology:
             html = f.read()
 
         # JS to resize the network container to viewport height
-        resize_script = """
+        # and show a simple notice about hidden deep levels
+        resize_script = f"""
         <script type="text/javascript">
-        function resizeNetwork() {
+        function resizeNetwork() {{
             var net = document.getElementById('mynetwork');
             if (!net) return;
             var offset = 220;  // space for title, tabs, and controls
             var h = window.innerHeight - offset;
-            if (h < 400) { h = 400; }
+            if (h < 400) {{ h = 400; }}
             net.style.height = h + "px";
-        }
+        }}
         window.addEventListener('load', resizeNetwork);
         window.addEventListener('resize', resizeNetwork);
         </script>
@@ -184,9 +227,20 @@ with tab_topology:
 
         final_html = html.replace("</body>", resize_script + "</body>")
 
-        st.subheader("Graph view")
+        st.subheader("Graph view (levels 1–5 shown, 6–15 collapsed by default)")
+        st.caption(
+            "Nodes at levels 6–15 are hidden to keep the view readable. "
+            "You can navigate to deeper components via the tables or by "
+            "temporarily changing the visibility rule in the code later."
+        )
+
         # Height is a fallback; JS will adjust to viewport
         components.html(final_html, height=700, scrolling=False)
+
+        # Optional: show a summary of how many edges were hidden
+        st.caption(
+            f"Visible edges: {len(visible_edges)} | Hidden deep-level edges (6–15): {len(hidden_edges)}"
+        )
 
     else:
         st.info("Upload a BOM file to see the topology.")
