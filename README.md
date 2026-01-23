@@ -29,6 +29,18 @@ python3 bom_explosion.py
 
 This will display BOM explosions for sample finished goods with their complete material breakdowns.
 
+### Running the Examples
+
+```bash
+python3 examples.py
+```
+
+This will run multiple examples showing different use cases:
+- Custom BOM data (bike assembly example)
+- Different quantity calculations
+- Comparing multiple products
+- Interactive exploration
+
 ### Using in Your Code
 
 ```python
