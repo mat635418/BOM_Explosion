@@ -89,8 +89,8 @@ with tab_topology:
                 help="Display the underlying node and edge lists for debugging or export.",
             )
 
-        physics_enabled = st.session_state["physics_enabled"]
-        show_raw_data = st.session_state["show_raw_data"]
+        physics_enabled = bool(st.session_state["physics_enabled"])
+        show_raw_data = bool(st.session_state["show_raw_data"])
 
         # Optional raw data
         if show_raw_data:
@@ -119,38 +119,34 @@ with tab_topology:
         # Initial height is a placeholder; JS will stretch to viewport height.
         net = Network(height="600px", width="100%", directed=True)
 
-        # Valid JSON options: hierarchical left-to-right layout
-        net.set_options(
-            """
-            {
-              "layout": {
-                "hierarchical": {
-                  "enabled": true,
-                  "direction": "LR",
-                  "sortMethod": "hubsize",
-                  "levelSeparation": 150,
-                  "nodeSpacing": 150,
-                  "treeSpacing": 200
-                }
-              },
-              "physics": {
-                "enabled": true,
-                "hierarchicalRepulsion": {
-                  "nodeDistance": 150,
-                  "centralGravity": 0.0,
-                  "springLength": 100,
-                  "springConstant": 0.01,
-                  "damping": 0.09
-                }
-              }
-            }
-            """
-        )
+        # Inject physics_enabled directly into valid JSON options
+        options_json = f"""
+        {{
+          "layout": {{
+            "hierarchical": {{
+              "enabled": true,
+              "direction": "LR",
+              "sortMethod": "hubsize",
+              "levelSeparation": 150,
+              "nodeSpacing": 150,
+              "treeSpacing": 200
+            }}
+          }},
+          "physics": {{
+            "enabled": {str(physics_enabled).lower()},
+            "hierarchicalRepulsion": {{
+              "nodeDistance": 150,
+              "centralGravity": 0.0,
+              "springLength": 100,
+              "springConstant": 0.01,
+              "damping": 0.09
+            }}
+          }}
+        }}
+        """
+        net.set_options(options_json)
 
         net.from_nx(G)
-
-        # Enable / disable physics from checkbox
-        net.toggle_physics(physics_enabled)
 
         html_file = "bom_topology.html"
         net.save_graph(html_file)
