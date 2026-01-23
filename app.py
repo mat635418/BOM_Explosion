@@ -14,7 +14,7 @@ if "bom_app" not in st.session_state:
 
 app = st.session_state["bom_app"]
 
-st.title("BOM Explosion Tool - v.0.05")
+st.title("BOM Explosion Tool - v0.05")
 
 st.markdown(
     """
@@ -63,15 +63,53 @@ with tab_topology:
     if app.has_topology():
         topology = app.get_topology()
 
-        # --- Show nodes / edges as text ---
-        with st.expander("Nodes and edges (raw)", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Nodes (all unique parts)**")
-                st.write(topology.nodes)
-            with col2:
-                st.markdown("**Edges (Parent → Child relationships)**")
-                st.write(topology.edges)
+        # --- Parameters / controls above the graph ---
+        with st.expander("Graph parameters", expanded=True):
+            col_p1, col_p2, col_p3 = st.columns([1, 1, 1])
+
+            with col_p1:
+                physics_enabled = st.checkbox(
+                    "Enable physics layout",
+                    value=True,
+                    help=(
+                        "When enabled, nodes move under simulated forces to reach a readable layout. "
+                        "Turn it off for a static layout once you are happy with the positions."
+                    ),
+                )
+
+            with col_p2:
+                height_px = st.slider(
+                    "Graph height (px)",
+                    min_value=600,
+                    max_value=1500,
+                    value=1200,  # was ~700–750; now extended by ~500px
+                    step=50,
+                    help=(
+                        "Increase the height to see more of the network at once. "
+                        "Useful for large BOMs with many levels."
+                    ),
+                )
+
+            with col_p3:
+                show_raw_data = st.checkbox(
+                    "Show raw nodes/edges table",
+                    value=False,
+                    help=(
+                        "When checked, displays the underlying lists of nodes and edges below. "
+                        "Useful for debugging or exporting."
+                    ),
+                )
+
+        # --- Optional: raw nodes / edges ---
+        if show_raw_data:
+            with st.expander("Nodes and edges (raw data)", expanded=False):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Nodes (all unique parts)**")
+                    st.write(topology.nodes)
+                with col2:
+                    st.markdown("**Edges (Parent → Child relationships)**")
+                    st.write(topology.edges)
 
         # --- Build NetworkX graph ---
         G = nx.DiGraph()
@@ -82,26 +120,30 @@ with tab_topology:
             parent = edge["from"]
             child = edge["to"]
             qty = edge.get("quantity", 1)
-            G.add_edge(parent, child, quantity=qty)
+            # Use quantity as edge label
+            G.add_edge(parent, child, quantity=qty, title=f"Qty: {qty}")
 
         # --- Render with PyVis ---
-        net = Network(height="700px", width="100%", directed=True)
+        net = Network(height=f"{height_px}px", width="100%", directed=True)
+
+        # Optional: basic styling / better default appearance
+        net.barnes_hut()
         net.from_nx(G)
 
-        # Optionally tune physics / layout a bit
-        net.toggle_physics(True)
+        # Physics on/off from the checkbox
+        net.toggle_physics(physics_enabled)
+
+        # Optionally expose some buttons (layout/physics)
         net.show_buttons(filter_=["physics"])
 
-        # Generate and display HTML
         html_file = "bom_topology.html"
         net.save_graph(html_file)
 
-        # Read the HTML and embed it
         with open(html_file, "r", encoding="utf-8") as f:
             html = f.read()
 
         st.subheader("Graph view")
-        components.html(html, height=750, scrolling=True)
+        components.html(html, height=height_px + 50, scrolling=True)
 
     else:
         st.info("Upload a BOM file to see the topology.")
