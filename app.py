@@ -24,7 +24,7 @@ st.markdown("""
         padding: 10px 15px;
         border-radius: 8px;
         border: 1px solid #dee2e6;
-        margin-bottom: 10px;
+        margin-bottom: 15px;
     }
     .legend-item {
         display: flex;
@@ -83,9 +83,6 @@ def normalize_material_type(raw_type):
     return "DEFAULT"
 
 def load_data(file_input):
-    """
-    Handles both Streamlit UploadedFile objects and local file paths (str).
-    """
     try:
         df = None
         # 1. Handle Local File Path (String)
@@ -95,7 +92,7 @@ def load_data(file_input):
                 return None
             
             if file_input.lower().endswith('.csv'):
-                df = pd.read_csv(file_input) # CSV default encoding
+                df = pd.read_csv(file_input) 
             else:
                 df = pd.read_excel(file_input)
 
@@ -208,7 +205,7 @@ with st.sidebar:
     # 1. Test File Button
     if st.button("🚀 Load Test File"):
         st.session_state["use_test_file"] = True
-        st.session_state["uploaded_file"] = None # Clear manual upload
+        st.session_state["uploaded_file"] = None 
         
     # 2. Manual Upload
     uploaded_file = st.file_uploader("Or Upload BOM (CSV/Excel)", type=["csv", "xlsx"])
@@ -223,11 +220,10 @@ with st.sidebar:
 df = None
 
 if st.session_state.get("use_test_file"):
-    # Load from root
-    test_file_path = "BOM_PL-FT11865.XLSX"
+    test_file_path = "BOM_PL-FT11865.xlsx"
     df = load_data(test_file_path)
     if df is not None:
-        st.success(f"Loaded Test File: {test_file_path}")
+        st.success(f"Using Test File: {test_file_path}")
 
 elif st.session_state.get("uploaded_file"):
     df = load_data(st.session_state["uploaded_file"])
@@ -256,7 +252,7 @@ if df is not None:
     # --- NETWORK GRAPH ---
     net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#333", directed=True)
     
-    # Explicit coloring for search results
+    # Search Highlight Logic
     if search:
         for n in G.nodes:
             if search.lower() in n.lower():
@@ -266,7 +262,7 @@ if df is not None:
     
     net.from_nx(G)
     
-    # JSON Options (Robust)
+    # --- HIGHLIGHT OPTIONS (Orange) ---
     net.set_options("""
     {
       "nodes": {
