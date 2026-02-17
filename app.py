@@ -6,7 +6,7 @@ import streamlit.components.v1 as components
 import numpy as np
 
 # ==========================================
-# 1. PAGE CONFIG & PRECISE STYLING
+# 1. PAGE CONFIG & STYLING
 # ==========================================
 st.set_page_config(page_title="SAP BOM Visualizer", layout="wide", page_icon="🏭")
 
@@ -40,7 +40,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- STRICT PASTEL COLOR PALETTE ---
-# Exact Hex codes used for both Legend and Graph
 STYLE_MAP = {
     "FG":       {"color": "#93C5FD", "shape": "box",      "label": "Finished Good", "desc": "CURT, FERT"}, # Blue
     "ASSM":     {"color": "#5EEAD4", "shape": "diamond",  "label": "Assembly",      "desc": "ASSM, HALB"}, # Teal
@@ -52,14 +51,14 @@ STYLE_MAP = {
 }
 
 # ==========================================
-# 2. ROBUST DATA LOGIC
+# 2. DATA LOGIC (ROBUST)
 # ==========================================
 def find_material_type_column(df):
     target_headers = ["material type", "mat. type", "mat_type", "ptyp", "mtart"]
     for col in df.columns:
         if any(t in str(col).lower() for t in target_headers): return col
     
-    # Fallback: look for 'Type' but exclude non-relevant columns
+    # Fallback
     for col in df.columns:
         c_str = str(col).lower()
         if "type" in c_str and not any(x in c_str for x in ["mrp", "item", "doc", "class"]):
@@ -67,20 +66,12 @@ def find_material_type_column(df):
     return None
 
 def normalize_material_type(raw_type):
-    """
-    Strict mapping logic. 
-    Adjusted Priority: Checks RAW before others to prevent misclassification.
-    """
     t = str(raw_type).upper().strip()
     
-    # Priority 1: Raw Materials (Force Green)
+    # Logic Priority: Raw -> Compound -> Semi -> FG
     if any(x in t for x in ["RAW", "ROH", "LRAW", "ZROH"]): return "RAW"
-    
-    # Priority 2: Compounds (Force Purple)
     if "CMPD" in t: return "CMPD"
     if "GUM" in t: return "GUM"
-    
-    # Priority 3: Assemblies/FG
     if any(x in t for x in ["ASSM", "HALB", "SEMI"]): return "ASSM"
     if any(x in t for x in ["CURT", "FERT", "FRIP"]): return "FG"
     if "VERP" in t or "PACK" in t: return "PACK"
@@ -89,10 +80,7 @@ def normalize_material_type(raw_type):
 
 def load_data(uploaded_file):
     try:
-        # 1. Reset file pointer to avoid empty read on re-runs
         uploaded_file.seek(0)
-        
-        # 2. Read with encoding safety
         if uploaded_file.name.lower().endswith('.csv'):
             try:
                 df = pd.read_csv(uploaded_file)
@@ -104,7 +92,6 @@ def load_data(uploaded_file):
 
         if df.empty: return None
 
-        # 3. Column Mapping
         col_level = next((c for c in df.columns if any(x in str(c).lower() for x in ["level", "lvl"])), None)
         col_comp = next((c for c in df.columns if any(x in str(c).lower() for x in ["component", "material", "object"])), None)
         col_type = find_material_type_column(df)
@@ -116,7 +103,6 @@ def load_data(uploaded_file):
             st.error(f"Missing Level/Component columns. Found: {list(df.columns)}")
             return None
 
-        # 4. Data Cleaning
         clean_df = pd.DataFrame()
         clean_df["Level"] = pd.to_numeric(df[col_level], errors='coerce').fillna(0).astype(int)
         clean_df["Component"] = df[col_comp].astype(str).str.strip()
@@ -125,7 +111,6 @@ def load_data(uploaded_file):
         clean_df["Quantity"] = pd.to_numeric(df[col_qty], errors='coerce').fillna(1.0) if col_qty else 1.0
 
         if col_type:
-            # FIX: Use .str accessor properly to avoid "Series object has no attribute upper"
             clean_df["Raw_Type"] = df[col_type].astype(str).str.strip().str.upper()
             clean_df["Category"] = clean_df["Raw_Type"].apply(normalize_material_type)
         else:
@@ -138,7 +123,7 @@ def load_data(uploaded_file):
         return None
 
 # ==========================================
-# 3. GRAPH BUILDER (FIXED COLORS & TOOLTIPS)
+# 3. GRAPH BUILDER (HTML & HIGHLIGHT FIX)
 # ==========================================
 def build_network(df):
     G = nx.DiGraph()
@@ -151,29 +136,34 @@ def build_network(df):
         
         style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # Tooltip HTML - Clean inline CSS
-        tooltip_html = (
-            f"<div style='background-color: white; padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-family: Arial;'>"
-            f"<b style='font-size: 14px; color: #333;'>{comp}</b><br>"
-            f"<i style='color: #666;'>{row['Description']}</i><br><br>"
-            f"Type: <b>{row['Raw_Type']}</b><br>"
-            f"Level: {level}<br>"
-            f"Qty: {row['Quantity']} {row['Unit']}"
+        # --- HTML TOOLTIP FIX ---
+        # 1. Use simple inline CSS
+        # 2. Use .replace('\n', '') to strictly remove newlines which break Vis.js
+        html_content = (
+            f"<div style='font-family: Arial; font-size: 12px; padding: 5px; color: #333;'>"
+            f"  <strong style='font-size: 14px;'>{comp}</strong><br>"
+            f"  <span style='color: #666; font-style: italic;'>{row['Description']}</span><br>"
+            f"  <hr style='border: 0; border-top: 1px solid #ddd; margin: 5px 0;'>"
+            f"  Type: <b>{row['Raw_Type']}</b> ({cat})<br>"
+            f"  Level: {level}<br>"
+            f"  Qty: {row['Quantity']} {row['Unit']}"
             f"</div>"
         )
-        
+        # CRITICAL: Flatten the string
+        tooltip_safe = html_content.replace("\n", "").replace("\r", "")
+
         G.add_node(
             comp, 
             label=comp, 
-            title=tooltip_html,   
-            color=style["color"], # Explicit Color
+            title=tooltip_safe,   # The safe HTML string
+            color=style["color"],
             shape=style["shape"],
             size=25 if level == 1 else 18,
             level=level,
-            # IMPORTANT: Removed 'group' parameter to ensure custom colors work
+            borderWidth=1,
+            borderWidthSelected=3,
         )
 
-        # Parent-Child Logic
         stack[level] = comp
         if level > 1:
             parent_level = level - 1
@@ -198,8 +188,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("Legend")
-    
-    # Legend Rendering
     st.markdown('<div class="legend-box">', unsafe_allow_html=True)
     for key, style in STYLE_MAP.items():
         st.markdown(f"""
@@ -212,62 +200,49 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
-    
-    st.markdown("---")
-    st.info("💡 **Tip:** Double-click a node to focus. Hover for details.")
 
 if uploaded_file is not None:
     df = load_data(uploaded_file)
     
     if df is not None:
-        # Debugger for column verification
-        with st.expander("🔍 Debug: Check Color Logic"):
-            st.markdown(f"**Found Material Type Column:** `{find_material_type_column(df) or 'Not Found'}`")
-            st.dataframe(
-                df[["Level", "Component", "Raw_Type", "Category"]]
-                .head(10)
-            )
-
         G = build_network(df)
         
-        # Search Bar
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.subheader(f"BOM Structure: {df.iloc[0]['Component']}")
+            st.subheader(f"Structure: {df.iloc[0]['Component']}")
         with col2:
-            search = st.text_input("🔍 Find Component", "")
+            search = st.text_input("🔍 Find Node", "")
 
-        # PyVis Setup
         net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#333", directed=True)
         
-        # Search Highlighting
+        # --- HIGHLIGHT FIX: Explicit Node Coloring ---
         if search:
             for n in G.nodes:
                 if search.lower() in n.lower():
-                    G.nodes[n]['color'] = "#F59E0B" # Orange for search result
+                    # Direct override for found nodes
+                    G.nodes[n]['color'] = "#F59E0B"
                     G.nodes[n]['size'] = 30
                     G.nodes[n]['borderWidth'] = 3
-
+        
         net.from_nx(G)
         
-        # Options: STRICT JSON ONLY (No JS Functions)
-        # Using standard JSON keys for highlighting colors
+        # --- OPTIONS FIX ---
+        # No JS functions here. Pure JSON.
+        # We set specific "highlight" and "hover" colors in the global options.
         net.set_options("""
         {
           "nodes": {
-            "borderWidth": 1,
-            "borderWidthSelected": 2,
+            "font": { "size": 14, "face": "Segoe UI" },
             "color": {
-              "highlight": {
-                "border": "#D97706",
-                "background": "#F59E0B"
-              },
-              "hover": {
-                "border": "#D97706",
-                "background": "#F59E0B"
-              }
-            },
-            "font": { "size": 14, "face": "Segoe UI" }
+                "highlight": {
+                    "border": "#D97706",
+                    "background": "#F59E0B"
+                },
+                "hover": {
+                    "border": "#D97706",
+                    "background": "#F59E0B"
+                }
+            }
           },
           "edges": {
             "color": { 
@@ -299,7 +274,6 @@ if uploaded_file is not None:
         """)
 
         try:
-            # Save to local file
             net.save_graph("bom_viz.html")
             with open("bom_viz.html", 'r', encoding='utf-8') as f:
                 source_html = f.read()
