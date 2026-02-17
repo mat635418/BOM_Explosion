@@ -4,6 +4,7 @@ import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
 import numpy as np
+import os
 
 # ==========================================
 # 1. PAGE CONFIG & STYLING
@@ -13,49 +14,55 @@ st.set_page_config(page_title="SAP BOM Visualizer", layout="wide", page_icon="�
 st.markdown("""
 <style>
     .block-container {padding-top: 1rem !important;}
-    div[data-testid="stExpander"] details summary p {font-weight: bold;}
+    
+    /* Horizontal Legend Styling (Main Screen) */
+    .legend-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 15px;
+        background-color: #f8f9fa;
+        padding: 10px 15px;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+        margin-bottom: 10px;
+    }
     .legend-item {
         display: flex;
         align-items: center;
-        margin-bottom: 8px;
-        font-family: sans-serif;
-        font-size: 14px;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 13px;
+        color: #333;
     }
     .legend-color {
-        width: 18px;
-        height: 18px;
-        margin-right: 12px;
-        border-radius: 4px;
-        border: 1px solid #ddd;
+        width: 14px;
+        height: 14px;
+        margin-right: 8px;
+        border-radius: 3px;
+        border: 1px solid rgba(0,0,0,0.1);
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- PASTEL COLOR PALETTE (Functional Semantics) ---
+# --- STRICT PASTEL COLOR PALETTE ---
 STYLE_MAP = {
-    "FG":       {"color": "#93C5FD", "shape": "box",      "label": "Finished Good", "desc": "CURT, FERT"},
-    "ASSM":     {"color": "#5EEAD4", "shape": "diamond",  "label": "Assembly",      "desc": "ASSM, HALB"},
-    "CMPD":     {"color": "#C084FC", "shape": "hexagon",  "label": "Compound",      "desc": "CMPD"},
-    "RAW":      {"color": "#86EFAC", "shape": "dot",      "label": "Raw Material",  "desc": "RAW, ROH, LRAW"},
-    "GUM":      {"color": "#F9A8D4", "shape": "star",     "label": "Rubber/Gum",    "desc": "GUM"},
-    "PACK":     {"color": "#FCD34D", "shape": "square",   "label": "Packaging",     "desc": "VERP"},
-    "DEFAULT":  {"color": "#E5E7EB", "shape": "ellipse",  "label": "Other",         "desc": "Unknown"}
+    "FG":       {"color": "#93C5FD", "shape": "box",      "label": "Finished Good", "desc": "CURT, FERT"}, # Blue
+    "ASSM":     {"color": "#5EEAD4", "shape": "diamond",  "label": "Assembly",      "desc": "ASSM, HALB"}, # Teal
+    "CMPD":     {"color": "#C084FC", "shape": "hexagon",  "label": "Compound",      "desc": "CMPD"},       # Purple
+    "RAW":      {"color": "#86EFAC", "shape": "ellipse",  "label": "Raw Material",  "desc": "RAW, ROH"},   # Green (Now Ellipse)
+    "GUM":      {"color": "#F9A8D4", "shape": "star",     "label": "Rubber/Gum",    "desc": "GUM"},        # Pink
+    "PACK":     {"color": "#FCD34D", "shape": "square",   "label": "Packaging",     "desc": "VERP"},       # Yellow
+    "DEFAULT":  {"color": "#E5E7EB", "shape": "dot",      "label": "Other",         "desc": "Unknown"}     # Grey (Now Dot)
 }
 
 # ==========================================
-# 2. DATA PROCESSING LOGIC
+# 2. DATA LOGIC
 # ==========================================
 def find_material_type_column(df):
-    """Safely hunts for Material Type, handling integer headers or weird casing."""
     target_headers = ["material type", "mat. type", "mat_type", "ptyp", "mtart"]
-    
-    # Check 1: Exact target matches
     for col in df.columns:
-        c_str = str(col).lower()
-        if any(t in c_str for t in target_headers):
-            return col
-            
-    # Check 2: "Type" but not excluded words
+        if any(t in str(col).lower() for t in target_headers): return col
+    
+    # Fallback
     for col in df.columns:
         c_str = str(col).lower()
         if "type" in c_str and not any(x in c_str for x in ["mrp", "item", "doc", "class"]):
@@ -63,38 +70,50 @@ def find_material_type_column(df):
     return None
 
 def normalize_material_type(raw_type):
-    """Maps SAP codes to functional categories."""
     t = str(raw_type).upper().strip()
     
+    # Logic Priority
     if any(x in t for x in ["RAW", "ROH", "LRAW", "ZROH"]): return "RAW"
     if "CMPD" in t: return "CMPD"
+    if "GUM" in t: return "GUM"
     if any(x in t for x in ["ASSM", "HALB", "SEMI"]): return "ASSM"
     if any(x in t for x in ["CURT", "FERT", "FRIP"]): return "FG"
-    if "GUM" in t: return "GUM"
     if "VERP" in t or "PACK" in t: return "PACK"
     
     return "DEFAULT"
 
-def load_data(uploaded_file):
+def load_data(file_input):
+    """
+    Handles both Streamlit UploadedFile objects and local file paths (str).
+    """
     try:
-        # Reset file pointer to beginning
-        uploaded_file.seek(0)
-        
-        # Read file with safe encoding fallback
-        if uploaded_file.name.lower().endswith('.csv'):
-            try:
-                df = pd.read_csv(uploaded_file)
-            except UnicodeDecodeError:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, encoding='latin1')
-        else:
-            df = pd.read_excel(uploaded_file)
-        
-        if df.empty:
-            st.error("The uploaded file seems to be empty.")
-            return None
+        df = None
+        # 1. Handle Local File Path (String)
+        if isinstance(file_input, str):
+            if not os.path.exists(file_input):
+                st.error(f"Test file not found: {file_input}")
+                return None
+            
+            if file_input.lower().endswith('.csv'):
+                df = pd.read_csv(file_input) # CSV default encoding
+            else:
+                df = pd.read_excel(file_input)
 
-        # 1. Identify Columns
+        # 2. Handle Streamlit Upload Object
+        else:
+            file_input.seek(0)
+            if file_input.name.lower().endswith('.csv'):
+                try:
+                    df = pd.read_csv(file_input)
+                except UnicodeDecodeError:
+                    file_input.seek(0)
+                    df = pd.read_csv(file_input, encoding='latin1')
+            else:
+                df = pd.read_excel(file_input)
+
+        if df is None or df.empty: return None
+
+        # Column Mapping
         col_level = next((c for c in df.columns if any(x in str(c).lower() for x in ["level", "lvl"])), None)
         col_comp = next((c for c in df.columns if any(x in str(c).lower() for x in ["component", "material", "object"])), None)
         col_type = find_material_type_column(df)
@@ -103,25 +122,17 @@ def load_data(uploaded_file):
         col_desc = next((c for c in df.columns if any(x in str(c).lower() for x in ["desc", "description", "text"])), None)
 
         if not col_level or not col_comp:
-            st.error(f"Missing required columns (Level/Component). Found: {list(df.columns)}")
+            st.error(f"Missing Level/Component columns. Found: {list(df.columns)}")
             return None
 
-        # 2. Normalize Data
         clean_df = pd.DataFrame()
         clean_df["Level"] = pd.to_numeric(df[col_level], errors='coerce').fillna(0).astype(int)
         clean_df["Component"] = df[col_comp].astype(str).str.strip()
         clean_df["Description"] = df[col_desc].astype(str) if col_desc else ""
         clean_df["Unit"] = df[col_unit].astype(str) if col_unit else ""
-        
-        # Quantity Logic
-        if col_qty:
-            clean_df["Quantity"] = pd.to_numeric(df[col_qty], errors='coerce').fillna(1.0)
-        else:
-            clean_df["Quantity"] = 1.0
+        clean_df["Quantity"] = pd.to_numeric(df[col_qty], errors='coerce').fillna(1.0) if col_qty else 1.0
 
-        # Type Logic (The Fix is here: .str.upper())
         if col_type:
-            # We must use .str.upper() on the Series, not .upper()
             clean_df["Raw_Type"] = df[col_type].astype(str).str.strip().str.upper()
             clean_df["Category"] = clean_df["Raw_Type"].apply(normalize_material_type)
         else:
@@ -129,9 +140,8 @@ def load_data(uploaded_file):
             clean_df["Category"] = "DEFAULT"
 
         return clean_df
-
     except Exception as e:
-        st.error(f"Error reading file: {e}")
+        st.error(f"Data Error: {e}")
         return None
 
 # ==========================================
@@ -148,29 +158,31 @@ def build_network(df):
         
         style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # HTML Tooltip
-        tooltip = f"""
-        <div style='font-family: sans-serif; padding: 5px; min-width: 150px;'>
-            <strong style='font-size: 14px;'>{comp}</strong><br>
-            <span style='color: #666;'>{row['Description']}</span><hr style='margin: 5px 0; border-top: 1px solid #eee;'>
-            Type: <b>{row['Raw_Type']}</b> ({cat})<br>
-            Level: {level}<br>
-            Qty: {row['Quantity']} {row['Unit']}
-        </div>
-        """
-        
+        # Safe HTML Tooltip (No Newlines)
+        html_content = (
+            f"<div style='font-family: Arial; font-size: 12px; padding: 5px; color: #333;'>"
+            f"  <strong style='font-size: 14px;'>{comp}</strong><br>"
+            f"  <span style='color: #666; font-style: italic;'>{row['Description']}</span><br>"
+            f"  <hr style='border: 0; border-top: 1px solid #ddd; margin: 5px 0;'>"
+            f"  Type: <b>{row['Raw_Type']}</b> ({cat})<br>"
+            f"  Level: {level}<br>"
+            f"  Qty: {row['Quantity']} {row['Unit']}"
+            f"</div>"
+        )
+        tooltip_safe = html_content.replace("\n", "").replace("\r", "")
+
         G.add_node(
             comp, 
             label=comp, 
-            title=tooltip,
+            title=tooltip_safe,
             color=style["color"],
             shape=style["shape"],
             size=25 if level == 1 else 18,
             level=level,
-            group=cat
+            borderWidth=1,
+            borderWidthSelected=3,
         )
 
-        # Parent-Child Logic
         stack[level] = comp
         if level > 1:
             parent_level = level - 1
@@ -179,12 +191,8 @@ def build_network(df):
             
             if parent_level in stack:
                 parent = stack[parent_level]
-                
-                w = 1.0
-                if row['Quantity'] > 0:
-                    w = 1 + np.log1p(row['Quantity'])
-                
-                G.add_edge(parent, comp, width=w, title=f"Qty: {row['Quantity']}")
+                w = 1 + np.log1p(row['Quantity']) if row['Quantity'] > 0 else 1
+                G.add_edge(parent, comp, width=w, color="#CBD5E1") 
     
     return G
 
@@ -193,119 +201,123 @@ def build_network(df):
 # ==========================================
 st.title("🏭 SAP BOM Cockpit")
 
+# --- SIDEBAR (Controls Only) ---
 with st.sidebar:
-    st.header("1. Upload Data")
-    uploaded_file = st.file_uploader("Upload BOM", type=["csv", "xlsx"])
+    st.header("Data Input")
     
+    # 1. Test File Button
+    if st.button("🚀 Load Test File"):
+        st.session_state["use_test_file"] = True
+        st.session_state["uploaded_file"] = None # Clear manual upload
+        
+    # 2. Manual Upload
+    uploaded_file = st.file_uploader("Or Upload BOM (CSV/Excel)", type=["csv", "xlsx"])
+    if uploaded_file:
+        st.session_state["use_test_file"] = False
+        st.session_state["uploaded_file"] = uploaded_file
+
     st.markdown("---")
-    st.header("Legend")
+    st.caption("Double-click a node to focus. Drag to move.")
+
+# --- DATA LOADING LOGIC ---
+df = None
+
+if st.session_state.get("use_test_file"):
+    # Load from root
+    test_file_path = "BOM_PL-FT11865.xlsx"
+    df = load_data(test_file_path)
+    if df is not None:
+        st.success(f"Loaded Test File: {test_file_path}")
+
+elif st.session_state.get("uploaded_file"):
+    df = load_data(st.session_state["uploaded_file"])
+
+# --- MAIN DISPLAY ---
+if df is not None:
+    G = build_network(df)
     
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.subheader(f"Structure: {df.iloc[0]['Component']}")
+    with col2:
+        search = st.text_input("🔍 Find Node", "")
+
+    # --- TOPOLOGY LEGEND (Derived & Top-Displayed) ---
+    st.markdown('<div class="legend-container">', unsafe_allow_html=True)
     for key, style in STYLE_MAP.items():
         st.markdown(f"""
         <div class="legend-item">
             <div class="legend-color" style="background-color: {style['color']};"></div>
-            <div>
-                <strong>{style['label']}</strong><br>
-                <span style="font-size:11px; color:#666;">{style['desc']}</span>
-            </div>
+            <strong>{style['label']}</strong>
         </div>
         """, unsafe_allow_html=True)
-        
-    st.markdown("---")
-    st.caption("Double-click a node to focus. Drag to move.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-if uploaded_file is not None:
-    df = load_data(uploaded_file)
+    # --- NETWORK GRAPH ---
+    net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#333", directed=True)
     
-    if df is not None:
-        # Debug Info
-        with st.expander("Show Data & Type Mapping Check"):
-            st.dataframe(df[["Level", "Component", "Raw_Type", "Category", "Description"]].head(20))
-
-        # Build Graph
-        G = build_network(df)
-        
-        # Search
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.subheader(f"Structure: {df.iloc[0]['Component']}")
-        with col2:
-            search = st.text_input("🔍 Find Node", "")
-
-        # PyVis Setup
-        net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#333", directed=True)
-        
-        if search:
-            for n in G.nodes:
-                if search.lower() in n.lower():
-                    G.nodes[n]['color'] = "#EF4444"
-                    G.nodes[n]['size'] = 30
-                    G.nodes[n]['borderWidth'] = 3
-
-        net.from_nx(G)
-        
-        # Advanced Physics & Interaction options
-        net.set_options("""
-        {
-          "nodes": {
-            "borderWidth": 1,
-            "borderWidthSelected": 3,
-            "chosen": {
-                "node": true,
-                "label": true
+    # Explicit coloring for search results
+    if search:
+        for n in G.nodes:
+            if search.lower() in n.lower():
+                G.nodes[n]['color'] = "#F59E0B"
+                G.nodes[n]['size'] = 30
+                G.nodes[n]['borderWidth'] = 3
+    
+    net.from_nx(G)
+    
+    # JSON Options (Robust)
+    net.set_options("""
+    {
+      "nodes": {
+        "font": { "size": 14, "face": "Segoe UI" },
+        "color": {
+            "highlight": {
+                "border": "#D97706",
+                "background": "#F59E0B"
             },
-            "font": {
-                "size": 14,
-                "face": "sans-serif"
+            "hover": {
+                "border": "#D97706",
+                "background": "#F59E0B"
             }
-          },
-          "edges": {
-            "color": {
-              "color": "#CBD5E1",
-              "highlight": "#F97316", 
-              "hover": "#F97316"
-            },
-            "smooth": {
-              "type": "cubicBezier",
-              "forceDirection": "horizontal",
-              "roundness": 0.4
-            }
-          },
-          "interaction": {
-            "hover": true,
-            "tooltipDelay": 100,
-            "hideEdgesOnDrag": false
-          },
-          "layout": {
-            "hierarchical": {
-              "enabled": true,
-              "direction": "LR",
-              "sortMethod": "directed",
-              "levelSeparation": 220,
-              "nodeSpacing": 160,
-              "treeSpacing": 200
-            }
-          },
-          "physics": {
-            "hierarchicalRepulsion": {
-              "centralGravity": 0.0,
-              "springLength": 100,
-              "springConstant": 0.01,
-              "nodeDistance": 150,
-              "damping": 0.09
-            },
-            "solver": "hierarchicalRepulsion"
-          }
         }
-        """)
+      },
+      "edges": {
+        "color": { 
+            "color": "#CBD5E1", 
+            "highlight": "#F59E0B",
+            "hover": "#F59E0B"
+        },
+        "smooth": { "type": "cubicBezier", "forceDirection": "horizontal", "roundness": 0.4 }
+      },
+      "interaction": {
+        "hover": true,
+        "tooltipDelay": 50,
+        "hideEdgesOnDrag": false
+      },
+      "layout": {
+        "hierarchical": {
+          "enabled": true,
+          "direction": "LR",
+          "sortMethod": "directed",
+          "levelSeparation": 250,
+          "nodeSpacing": 150
+        }
+      },
+      "physics": {
+        "hierarchicalRepulsion": { "nodeDistance": 160 },
+        "solver": "hierarchicalRepulsion"
+      }
+    }
+    """)
 
-        try:
-            net.save_graph("bom_viz.html")
-            with open("bom_viz.html", 'r', encoding='utf-8') as f:
-                source_html = f.read()
-            components.html(source_html, height=800, scrolling=False)
-        except Exception as e:
-            st.error(f"Graph Render Error: {e}")
+    try:
+        net.save_graph("bom_viz.html")
+        with open("bom_viz.html", 'r', encoding='utf-8') as f:
+            source_html = f.read()
+        components.html(source_html, height=800, scrolling=False)
+    except Exception as e:
+        st.error(f"Graph Render Error: {e}")
 
 else:
-    st.info("Please upload a BOM file.")
+    st.info("👈 Use the Test Button or Upload a file to start.")
