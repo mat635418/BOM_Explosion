@@ -224,7 +224,7 @@ df = None
 
 if st.session_state.get("use_test_file"):
     # Load from root
-    test_file_path = "BOM_PL-FT11865.xlsx"
+    test_file_path = "BOM_PL-FT11865.XLSX"
     df = load_data(test_file_path)
     if df is not None:
         st.success(f"Loaded Test File: {test_file_path}")
