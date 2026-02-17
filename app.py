@@ -7,58 +7,79 @@ import numpy as np
 import os
 
 # ==========================================
-# 1. PAGE CONFIG & STYLING
+# 1. PAGE CONFIG & PASTEL STYLING
 # ==========================================
 st.set_page_config(page_title="SAP BOM Visualizer", layout="wide", page_icon="🏭")
 
+# Custom CSS for cleaner look
 st.markdown("""
 <style>
     .block-container {padding-top: 1rem !important;}
     div[data-testid="stExpander"] details summary p {font-weight: bold;}
+    .legend-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 8px;
+        font-family: sans-serif;
+        font-size: 14px;
+    }
+    .legend-color {
+        width: 18px;
+        height: 18px;
+        margin-right: 12px;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Color Palette for SAP Material Types
-# keys are used for strict matching, but we will also use fuzzy matching in the logic
+# --- PASTEL COLOR PALETTE (Functional Semantics) ---
+# Keys are the "Normalized" types we will assign in logic
+# Colors are Pastel Hex codes
 STYLE_MAP = {
-    "CURT": {"color": "#0047AB", "shape": "box", "label": "FG (CURT)"},      # Cobalt Blue
-    "FERT": {"color": "#0047AB", "shape": "box", "label": "FG (FERT)"},
-    "HALB": {"color": "#008080", "shape": "diamond", "label": "Semi-Finished"}, # Teal
-    "ASSM": {"color": "#008080", "shape": "diamond", "label": "Assembly"},
-    "GUM":  {"color": "#D946EF", "shape": "star", "label": "Rubber/Gum"},    # Magenta
-    "CMPD": {"color": "#800080", "shape": "hexagon", "label": "Compound"},   # Purple
-    "RAW":  {"color": "#228B22", "shape": "dot", "label": "Raw Material"},   # Forest Green
-    "ROH":  {"color": "#228B22", "shape": "dot", "label": "Raw Material"},
-    "LRAW": {"color": "#228B22", "shape": "dot", "label": "Raw Material"},   # Legacy Raw
-    "VERP": {"color": "#DAA520", "shape": "square", "label": "Packaging"},   # Goldenrod
-    "DEFAULT": {"color": "#708090", "shape": "ellipse", "label": "Other"}   # Slate Grey
+    "FG":       {"color": "#93C5FD", "shape": "box",      "label": "Finished Good", "desc": "CURT, FERT"}, # Pastel Blue
+    "ASSM":     {"color": "#5EEAD4", "shape": "diamond",  "label": "Assembly",      "desc": "ASSM, HALB"}, # Pastel Teal
+    "CMPD":     {"color": "#C084FC", "shape": "hexagon",  "label": "Compound",      "desc": "CMPD"},       # Pastel Purple
+    "RAW":      {"color": "#86EFAC", "shape": "dot",      "label": "Raw Material",  "desc": "RAW, ROH, LRAW"}, # Pastel Green
+    "GUM":      {"color": "#F9A8D4", "shape": "star",     "label": "Rubber/Gum",    "desc": "GUM"},        # Pastel Pink
+    "PACK":     {"color": "#FCD34D", "shape": "square",   "label": "Packaging",     "desc": "VERP"},       # Pastel Amber
+    "DEFAULT":  {"color": "#E5E7EB", "shape": "ellipse",  "label": "Other",         "desc": "Unknown"}     # Pastel Grey
 }
 
 # ==========================================
-# 2. ROBUST DATA LOADING (FIXED)
+# 2. DATA PROCESSING LOGIC
 # ==========================================
 def find_material_type_column(df):
     """
-    Specifically hunts for the Material Type column with high precision.
-    Prioritizes 'Material Type' over generic 'Type' or 'Category' to avoid 
-    picking up 'MRP Type' or 'Item Category'.
+    Hunts for the Material Type column, explicitly ignoring 'MRP Type' or 'Item Category'.
     """
-    # 1. Exact or near-exact matches for standard SAP headers
-    # We look for these specific strings in the column headers
+    # Priority 1: Specific Headers
     target_headers = ["material type", "mat. type", "mat_type", "ptyp", "mtart"]
-    
     for col in df.columns:
         if any(t in col.lower() for t in target_headers):
             return col
             
-    # 2. Look for "Type" but exclude "MRP", "Item", "Doc"
-    # This prevents picking up 'MRP Type' or 'Item Category'
+    # Priority 2: 'Type' but not 'MRP'/'Item'/'Doc'
     for col in df.columns:
         c_low = col.lower()
-        if "type" in c_low and "mrp" not in c_low and "item" not in c_low and "doc" not in c_low:
+        if "type" in c_low and not any(x in c_low for x in ["mrp", "item", "doc", "class"]):
             return col
-            
     return None
+
+def normalize_material_type(raw_type):
+    """
+    Maps SAP codes (ROH, ZROH, CURT) to our 6 functional categories.
+    """
+    t = str(raw_type).upper().strip()
+    
+    if any(x in t for x in ["RAW", "ROH", "LRAW", "ZROH"]): return "RAW"
+    if "CMPD" in t: return "CMPD"
+    if any(x in t for x in ["ASSM", "HALB", "SEMI"]): return "ASSM"
+    if any(x in t for x in ["CURT", "FERT", "FRIP"]): return "FG"
+    if "GUM" in t: return "GUM"
+    if "VERP" in t or "PACK" in t: return "PACK"
+    
+    return "DEFAULT"
 
 def load_data(uploaded_file):
     try:
@@ -67,211 +88,223 @@ def load_data(uploaded_file):
         else:
             df = pd.read_excel(uploaded_file)
         
-        # Identify critical columns dynamically
+        # 1. Identify Columns
         col_level = next((c for c in df.columns if any(x in c.lower() for x in ["level", "lvl"])), None)
         col_comp = next((c for c in df.columns if any(x in c.lower() for x in ["component", "material", "object"])), None)
-        
-        # THE FIX: Use the specific function for Material Type
-        col_type = find_material_type_column(df)
-        
+        col_type = find_material_type_column(df) # Smart search
         col_qty = next((c for c in df.columns if any(x in c.lower() for x in ["qty", "quantity", "amount"])), None)
         col_unit = next((c for c in df.columns if any(x in c.lower() for x in ["unit", "uom", "bun"])), None)
         col_desc = next((c for c in df.columns if any(x in c.lower() for x in ["desc", "description", "text"])), None)
 
         if not col_level or not col_comp:
-            st.error(f"Could not find 'Level' or 'Component' columns. Found: {list(df.columns)}")
+            st.error("Missing required columns: 'Level' or 'Component'")
             return None
 
-        # Standardize DataFrame
+        # 2. Normalize Data
         clean_df = pd.DataFrame()
         clean_df["Level"] = pd.to_numeric(df[col_level], errors='coerce').fillna(0).astype(int)
         clean_df["Component"] = df[col_comp].astype(str).str.strip()
-        
-        # Clean Description
         clean_df["Description"] = df[col_desc].astype(str) if col_desc else ""
+        clean_df["Unit"] = df[col_unit].astype(str) if col_unit else ""
         
-        # Clean Type (Crucial Step)
-        if col_type:
-            # Convert to string, strip whitespace, and upper case
-            clean_df["Type"] = df[col_type].astype(str).str.strip().str.upper()
-        else:
-            clean_df["Type"] = "DEFAULT"
-            
-        clean_df["Unit"] = df[col_unit] if col_unit else ""
-        
-        # Clean Quantity
+        # Quantity Logic
         if col_qty:
             clean_df["Quantity"] = pd.to_numeric(df[col_qty], errors='coerce').fillna(1.0)
         else:
             clean_df["Quantity"] = 1.0
 
-        # DEBUG: Show user what we found to verify the fix
-        with st.sidebar.expander("🕵️ Debug: Column Mapping"):
-            st.write(f"**Level Col:** `{col_level}`")
-            st.write(f"**Mat Type Col:** `{col_type}` (Used for Color)")
-            st.write("**Unique Types Found:**")
-            st.write(clean_df["Type"].unique())
+        # Type Logic (Raw SAP Type -> Normalized Functional Category)
+        if col_type:
+            clean_df["Raw_Type"] = df[col_type].astype(str).str.strip().upper()
+            clean_df["Category"] = clean_df["Raw_Type"].apply(normalize_material_type)
+        else:
+            clean_df["Raw_Type"] = "Unknown"
+            clean_df["Category"] = "DEFAULT"
 
         return clean_df
 
     except Exception as e:
-        st.error(f"Data Load Error: {e}")
+        st.error(f"Error reading file: {e}")
         return None
 
 # ==========================================
-# 3. GRAPH CONSTRUCTION
+# 3. GRAPH BUILDER
 # ==========================================
 def build_network(df):
     G = nx.DiGraph()
-    stack = {} # Stores {level: component_id}
+    stack = {} 
 
     for _, row in df.iterrows():
         level = row["Level"]
         comp = row["Component"]
-        m_type = str(row["Type"]).upper()
+        cat = row["Category"]
         
-        # --- COLOR LOGIC (Fuzzy Matching) ---
-        # This handles cases where type is "LRAW" or "ZROH" etc.
-        if "RAW" in m_type or "ROH" in m_type:
-            style = STYLE_MAP["RAW"]
-        elif "CMPD" in m_type:
-            style = STYLE_MAP["CMPD"]
-        elif "ASSM" in m_type or "HALB" in m_type:
-            style = STYLE_MAP["ASSM"]
-        elif "GUM" in m_type:
-             style = STYLE_MAP["GUM"]
-        elif "CURT" in m_type or "FERT" in m_type:
-             style = STYLE_MAP["CURT"]
-        else:
-            style = STYLE_MAP.get(m_type, STYLE_MAP["DEFAULT"])
+        # Get Style config
+        style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # Generate Tooltip
-        title_html = f"<b>{comp}</b><br>Type: {m_type}<br>Level: {level}<br>Qty: {row['Quantity']} {row['Unit']}<br>{row['Description']}"
+        # Enhanced Tooltip HTML
+        tooltip = f"""
+        <div style='font-family: sans-serif; padding: 5px; min-width: 150px;'>
+            <strong style='font-size: 14px;'>{comp}</strong><br>
+            <span style='color: #666;'>{row['Description']}</span><hr style='margin: 5px 0; border-top: 1px solid #eee;'>
+            Type: <b>{row['Raw_Type']}</b> ({cat})<br>
+            Level: {level}<br>
+            Qty: {row['Quantity']} {row['Unit']}
+        </div>
+        """
         
         G.add_node(
             comp, 
             label=comp, 
-            title=title_html,
+            title=tooltip, # HTML Tooltip
             color=style["color"],
             shape=style["shape"],
-            size=25 if level == 1 else 15,
-            level=level,  # Required for Hierarchical layout
-            group=m_type  # Helpful for internal PyVis grouping
+            size=25 if level == 1 else 18,
+            level=level,
+            group=cat # For PyVis grouping
         )
 
-        # Logic: Find Parent
+        # Parent-Child Logic
         stack[level] = comp
-        
         if level > 1:
             parent_level = level - 1
-            # Backtrack stack to find nearest parent (handles skipped levels safely)
             while parent_level > 0 and parent_level not in stack:
                 parent_level -= 1
             
             if parent_level in stack:
                 parent = stack[parent_level]
-                # Logarithmic width for edges based on quantity
-                qty_val = row['Quantity']
-                width = 1 + np.log1p(qty_val) if qty_val > 0 else 1
                 
-                G.add_edge(parent, comp, width=width, title=f"Qty: {qty_val}")
+                # Edge width based on Log Quantity
+                w = 1.0
+                if row['Quantity'] > 0:
+                    w = 1 + np.log1p(row['Quantity'])
+                
+                G.add_edge(parent, comp, width=w, title=f"Qty: {row['Quantity']}")
     
     return G
 
 # ==========================================
-# 4. MAIN APP LAYOUT
+# 4. MAIN APP
 # ==========================================
-st.title("🏭 SAP BOM Visualization (Robust)")
+st.title("🏭 SAP BOM Cockpit")
 
 with st.sidebar:
     st.header("1. Upload Data")
-    uploaded_file = st.file_uploader("Upload BOM (CSV/Excel)", type=["csv", "xlsx"])
-    
-    st.header("2. View Settings")
-    layout_type = st.radio("Layout Direction", ["Left-to-Right (Process Flow)", "Top-Down (Org Chart)"], index=0)
-    physics = st.checkbox("Enable Physics (Wobbly)", value=False)
+    uploaded_file = st.file_uploader("Upload BOM", type=["csv", "xlsx"])
     
     st.markdown("---")
-    st.markdown("**Legend:**")
-    # Custom Legend Display
-    legend_items = [
-        ("FG (Finished)", "#0047AB"),
-        ("Assembly", "#008080"),
-        ("Compound", "#800080"),
-        ("Rubber/Gum", "#D946EF"),
-        ("Raw Material", "#228B22"),
-        ("Packaging", "#DAA520")
-    ]
-    for label, color in legend_items:
-        st.markdown(f"<div style='display:flex; align-items:center;'><div style='width:15px;height:15px;background:{color};margin-right:10px;border-radius:50%;'></div>{label}</div>", unsafe_allow_html=True)
+    st.header("Legend")
+    
+    # Dynamic Legend Loop
+    for key, style in STYLE_MAP.items():
+        st.markdown(f"""
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: {style['color']};"></div>
+            <div>
+                <strong>{style['label']}</strong><br>
+                <span style="font-size:11px; color:#666;">{style['desc']}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    st.markdown("---")
+    st.caption("Double-click a node to focus. Drag to move.")
 
 if uploaded_file is not None:
     df = load_data(uploaded_file)
     
     if df is not None:
-        # Show Data Preview
-        with st.expander("Show Raw Data Table", expanded=False):
-            st.dataframe(df)
+        # Debug Info
+        with st.expander("Show Data & Type Mapping Check"):
+            st.dataframe(df[["Level", "Component", "Raw_Type", "Category", "Description"]].head(20))
 
         # Build Graph
         G = build_network(df)
         
-        # Filtering (Optional)
-        col1, col2 = st.columns([3,1])
+        # Search & Filter
+        col1, col2 = st.columns([3, 1])
         with col1:
-            st.subheader(f"Explosion for: {df.iloc[0]['Component']}")
+            st.subheader(f"Structure: {df.iloc[0]['Component']}")
         with col2:
-             search_term = st.text_input("🔍 Highlight Component", "")
-        
-        # PyVis Setup
-        net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="black", directed=True)
+            search = st.text_input("🔍 Find Node", "")
+
+        # PyVis Configuration
+        net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#333", directed=True)
         
         # Apply Search Highlighting
-        if search_term:
-            for node in G.nodes:
-                if search_term.lower() in node.lower():
-                    G.nodes[node]['color'] = "#FF0000" # Red for match
-                    G.nodes[node]['size'] = 35
-                    G.nodes[node]['shape'] = "star"
-        
-        net.from_nx(G)
+        if search:
+            for n in G.nodes:
+                if search.lower() in n.lower():
+                    G.nodes[n]['color'] = "#EF4444" # Bright Red for search hit
+                    G.nodes[n]['size'] = 30
+                    G.nodes[n]['borderWidth'] = 3
 
-        # Layout Configuration
-        direction = "LR" if "Left" in layout_type else "UD"
+        net.from_nx(G)
         
-        net.set_options(f"""
-        {{
-            "layout": {{
-                "hierarchical": {{
-                    "enabled": true,
-                    "direction": "{direction}",
-                    "sortMethod": "directed",
-                    "levelSeparation": 200,
-                    "nodeSpacing": 150
-                }}
-            }},
-            "physics": {{
-                "enabled": {str(physics).lower()},
-                "hierarchicalRepulsion": {{
-                    "nodeDistance": 150
-                }}
-            }}
-        }}
+        # ADVANCED OPTIONS: Interaction & Physics
+        # This defines how the click highlighting works (High contrast orange)
+        net.set_options("""
+        {
+          "nodes": {
+            "borderWidth": 1,
+            "borderWidthSelected": 3,
+            "chosen": {
+                "node": true,
+                "label": true
+            },
+            "font": {
+                "size": 14,
+                "face": "sans-serif"
+            }
+          },
+          "edges": {
+            "color": {
+              "color": "#CBD5E1",
+              "highlight": "#F97316", 
+              "hover": "#F97316"
+            },
+            "smooth": {
+              "type": "cubicBezier",
+              "forceDirection": "horizontal",
+              "roundness": 0.4
+            }
+          },
+          "interaction": {
+            "hover": true,
+            "tooltipDelay": 100,
+            "hideEdgesOnDrag": false
+          },
+          "layout": {
+            "hierarchical": {
+              "enabled": true,
+              "direction": "LR",
+              "sortMethod": "directed",
+              "levelSeparation": 220,
+              "nodeSpacing": 160,
+              "treeSpacing": 200
+            }
+          },
+          "physics": {
+            "hierarchicalRepulsion": {
+              "centralGravity": 0.0,
+              "springLength": 100,
+              "springConstant": 0.01,
+              "nodeDistance": 150,
+              "damping": 0.09
+            },
+            "solver": "hierarchicalRepulsion"
+          }
+        }
         """)
 
-        # Save and Display
+        # Save & Render
         try:
-            # Save locally to current directory (safer than /tmp on some OS)
             net.save_graph("bom_viz.html")
-            
-            # Read back and display
             with open("bom_viz.html", 'r', encoding='utf-8') as f:
                 source_html = f.read()
-            
             components.html(source_html, height=800, scrolling=False)
-            
         except Exception as e:
-            st.error(f"Error displaying graph: {e}")
+            st.error(f"Graph Render Error: {e}")
 
 else:
-    st.info("Please upload your BOM file to begin.")
+    st.info("Please upload a BOM file.")
