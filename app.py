@@ -3,417 +3,313 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
+import numpy as np
+import io
 
-from BOM_Explosion import BOMExplosionApp
+# ==========================================
+# CONFIGURATION & STYLING
+# ==========================================
+st.set_page_config(page_title="SAP BOM Cockpit", layout="wide", page_icon="🏭")
 
-st.set_page_config(page_title="BOM Explosion", layout="wide")
+# SAP Material Type Color Palette
+MATERIAL_STYLES = {
+    "CURT": {"color": "#1E3A8A", "shape": "box", "label": "Finished Good (CURT)"},      # Deep Blue
+    "FERT": {"color": "#1E3A8A", "shape": "box", "label": "Finished Good (FERT)"},
+    "GRET": {"color": "#0EA5E9", "shape": "box", "label": "Green Tire (GRET)"},          # Sky Blue
+    "ASSM": {"color": "#0D9488", "shape": "diamond", "label": "Assembly (ASSM)"},        # Teal
+    "HALB": {"color": "#0D9488", "shape": "diamond", "label": "Semi-Finished (HALB)"},
+    "GUM":  {"color": "#D946EF", "shape": "star", "label": "Rubber/Gum (GUM)"},          # Magenta
+    "CMPD": {"color": "#9333EA", "shape": "hexagon", "label": "Compound (CMPD)"},        # Purple
+    "RAW":  {"color": "#16A34A", "shape": "dot", "label": "Raw Material (RAW)"},         # Green
+    "ROH":  {"color": "#16A34A", "shape": "dot", "label": "Raw Material (ROH)"},
+    "DEFAULT": {"color": "#9CA3AF", "shape": "ellipse", "label": "Other"}               # Grey
+}
 
-# Reduce top padding / margin so content starts higher on the page
-st.markdown(
-    """
-    <style>
-        .block-container {
-            padding-top: 1rem !important;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Custom CSS for the dashboard feel
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 5px solid #1E3A8A;
+    }
+    .stApp header {visibility: hidden;}
+    .block-container {padding-top: 1rem !important;}
+</style>
+""", unsafe_allow_html=True)
 
-# Keep a single global app instance
-if "bom_app" not in st.session_state:
-    st.session_state["bom_app"] = BOMExplosionApp()
+# ==========================================
+# LOGIC CLASS
+# ==========================================
+class SAPBOMProcessor:
+    def __init__(self, df):
+        self.df = df
+        self.G = nx.DiGraph()
+        self.root = None
+        self._build_graph()
 
-app = st.session_state["bom_app"]
+    def _clean_columns(self):
+        # Normalize column names for flexibility
+        cols = {c: c.lower().strip() for c in self.df.columns}
+        self.df.rename(columns=cols, inplace=True)
+        
+        # Map known variations to standard keys
+        standard_map = {}
+        for c in self.df.columns:
+            if 'component' in c and 'number' in c: standard_map[c] = 'component'
+            elif 'level' in c: standard_map[c] = 'level'
+            elif 'material' in c and 'type' in c: standard_map[c] = 'type'
+            elif 'qty' in c: standard_map[c] = 'qty'
+            elif 'unit' in c: standard_map[c] = 'unit'
+            elif 'description' in c: standard_map[c] = 'desc'
+            elif 'mrp' in c: standard_map[c] = 'mrp'
+            elif 'production' in c and 'version' in c: standard_map[c] = 'ver'
 
-st.title("BOM Explosion Tool")
+        self.df.rename(columns=standard_map, inplace=True)
+        
+        # Fill missing values
+        if 'type' not in self.df.columns: self.df['type'] = 'DEFAULT'
+        if 'qty' not in self.df.columns: self.df['qty'] = 1.0
+        self.df['level'] = pd.to_numeric(self.df['level'], errors='coerce').fillna(0).astype(int)
 
-st.markdown(
-    """
-    Upload a BOM file (single SKU for now) with at least these columns:
+    def _build_graph(self):
+        self._clean_columns()
+        
+        stack = {} # Stores {level: node_id}
+        
+        for _, row in self.df.iterrows():
+            level = row['level']
+            comp = str(row['component']).strip()
+            m_type = str(row.get('type', 'DEFAULT')).strip()
+            
+            # Store node attributes
+            attrs = {
+                'type': m_type,
+                'desc': str(row.get('desc', '')),
+                'unit': str(row.get('unit', '')),
+                'mrp': str(row.get('mrp', '-')),
+                'ver': str(row.get('ver', '-')),
+                'level': level
+            }
+            self.G.add_node(comp, **attrs)
+            
+            # Identify Root
+            if level == 1:
+                self.root = comp
+                
+            # Track hierarchy
+            stack[level] = comp
+            
+            # Create Edge (Parent -> Child)
+            if level > 1:
+                parent_level = level - 1
+                # Find the nearest parent in the stack
+                while parent_level > 0 and parent_level not in stack:
+                    parent_level -= 1
+                
+                if parent_level in stack:
+                    parent = stack[parent_level]
+                    qty = float(row.get('qty', 1.0))
+                    self.G.add_edge(parent, comp, weight=qty, unit=row.get('unit', ''))
 
-    - `Level`
-    - `Component number`
-    - quantity column like `Comp. Qty (BUn)` (optional, but recommended)
-    """
-)
+    def get_filtered_graph(self, focus_node=None, trace_to_root=False):
+        """
+        Returns a subgraph.
+        If trace_to_root is True: Returns the path from focus_node UP to the root.
+        If trace_to_root is False: Returns the subtree starting DOWN from focus_node.
+        """
+        if not focus_node or focus_node == "All":
+            return self.G
 
-# --- Upload box ---
-uploaded_file = st.file_uploader(
-    "Upload BOM file",
-    type=["csv", "xlsx"],
-    help="Upload a BOM for one SKU. Supported formats: CSV, Excel.",
-)
+        if trace_to_root:
+            # Upstream Trace
+            ancestors = nx.ancestors(self.G, focus_node)
+            ancestors.add(focus_node)
+            return self.G.subgraph(ancestors)
+        else:
+            # Downstream Explosion
+            descendants = nx.descendants(self.G, focus_node)
+            descendants.add(focus_node)
+            return self.G.subgraph(descendants)
 
-df = None
+# ==========================================
+# UI COMPONENTS
+# ==========================================
+def render_legend():
+    """Renders a visual legend in the Sidebar"""
+    st.sidebar.markdown("### 🎨 Material Legend")
+    legend_html = ""
+    for k, v in MATERIAL_STYLES.items():
+        if k in ["FERT", "HALB", "ROH"]: continue # Skip duplicate standard keys for cleanliness
+        legend_html += f"""
+        <div style="display: flex; align-items: center; margin-bottom: 5px;">
+            <div style="width: 15px; height: 15px; background-color: {v['color']}; 
+                        border-radius: {'50%' if v['shape']=='dot' else '2px'}; margin-right: 10px;"></div>
+            <span style="font-size: 12px;">{v['label']}</span>
+        </div>
+        """
+    st.sidebar.markdown(legend_html, unsafe_allow_html=True)
 
-if uploaded_file is not None:
+def render_details_panel(graph, selected_node):
+    """Side panel for deep dive details"""
+    if selected_node and selected_node in graph.nodes:
+        data = graph.nodes[selected_node]
+        st.sidebar.markdown("---")
+        st.sidebar.subheader(f"📦 {selected_node}")
+        
+        st.sidebar.markdown(f"**Desc:** {data.get('desc', 'N/A')}")
+        
+        c1, c2 = st.sidebar.columns(2)
+        c1.metric("Type", data.get('type', 'N/A'))
+        c2.metric("Level", data.get('level', 'N/A'))
+        
+        c3, c4 = st.sidebar.columns(2)
+        c3.markdown(f"**MRP Type:** `{data.get('mrp', '-')}`")
+        c4.markdown(f"**Prod Ver:** `{data.get('ver', '-')}`")
+        
+        # Calculate usage info
+        in_degree = graph.in_degree(selected_node)
+        out_degree = graph.out_degree(selected_node)
+        st.sidebar.info(f"Used in {in_degree} places | Has {out_degree} components")
+
+# ==========================================
+# MAIN APP
+# ==========================================
+st.title("🏭 SAP BOM Planner Cockpit")
+
+# 1. UPLOAD
+uploaded_file = st.sidebar.file_uploader("Upload SAP BOM (CSV/Excel)", type=["csv", "xlsx"])
+
+if uploaded_file:
+    # Load Data
     try:
-        if uploaded_file.name.lower().endswith(".csv"):
+        if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
             df = pd.read_excel(uploaded_file)
-
-        app.load_from_dataframe(df)
-        st.success("BOM data loaded successfully!")
-
+        
+        processor = SAPBOMProcessor(df)
+        st.sidebar.success(f"Loaded {len(processor.G.nodes)} materials")
+        render_legend()
+        
     except Exception as e:
-        st.error(f"Error while reading or parsing the file: {e}")
+        st.error(f"Error parsing file: {e}")
+        st.stop()
 
-# --- Tabs: Data / Topology / Tree View ---
-tab_data, tab_topology, tab_tree = st.tabs(["Data", "Topology", "Tree view"])
-
-# =========================
-# DATA TAB
-# =========================
-with tab_data:
-    st.subheader("Raw BOM data")
-    if app.has_data():
-        st.dataframe(app.get_dataframe())
-    else:
-        st.info("Upload a BOM file to view data.")
-
-# =========================
-# TOPOLOGY TAB
-# =========================
-with tab_topology:
-    st.subheader("Topology")
-
-    if app.has_topology():
-        topology = app.get_topology()
-
-        # Topology summary (best-effort; BOMExplosionApp can expose these)
-        with st.expander("Topology summary", expanded=False):
-            try:
-                summary = {
-                    "Nodes": len(topology.nodes),
-                    "Edges": len(topology.edges),
-                }
-                # Optional attributes if you add them in BOMExplosionApp
-                if hasattr(topology, "max_level"):
-                    summary["Max level"] = topology.max_level
-                if hasattr(topology, "avg_branching_factor"):
-                    summary["Average children per parent"] = topology.avg_branching_factor
-                st.write(summary)
-            except Exception:
-                st.write("Summary not available.")
-
-        # --- Controls above the graph ---
-        col_p1, col_p2, col_p3 = st.columns([1, 1, 1])
-
-        # Physics toggle + layout sliders
-        with col_p1:
-            physics_enabled = st.checkbox(
-                "Enable physics layout",
-                value=True,
-                key="physics_enabled",
-                help=(
-                    "When enabled, nodes move dynamically to a readable layout. "
-                    "Turn off if you want a stable, non-moving diagram."
-                ),
-            )
-            show_raw_data = st.checkbox(
-                "Show raw nodes/edges table",
-                value=False,
-                key="show_raw_data",
-                help="Display the underlying node and edge lists for debugging or export.",
-            )
-
-        # Layout / physics parameter sliders
-        with col_p2:
-            st.markdown("**Layout parameters**")
-            level_separation = st.slider(
-                "Level separation (LR distance between levels)",
-                50,
-                400,
-                150,
-                step=10,
-                help="Increase if levels overlap or are too close.",
-                key="level_separation",
-            )
-            node_spacing = st.slider(
-                "Node spacing (same-level spacing)",
-                50,
-                400,
-                150,
-                step=10,
-                help="Increase if siblings overlap.",
-                key="node_spacing",
-            )
-            node_distance = st.slider(
-                "Physics node distance",
-                50,
-                400,
-                150,
-                step=10,
-                help="Distance nodes try to keep from each other.",
-                key="node_distance",
-            )
-
-        # Root / subtree selection + search / full screen
-        with col_p3:
-            # Root nodes (if BOMExplosionApp provides them)
-            root_nodes = getattr(topology, "root_nodes", None)
-            selected_root = None
-            if root_nodes:
-                selected_root = st.selectbox(
-                    "Select finished good / root",
-                    root_nodes,
-                    help="Focus the visualization on a specific root and its subtree.",
-                    key="selected_root",
-                )
-
-            search_term = st.text_input(
-                "Search node (part / component)",
-                "",
-                key="search_term",
-                help="Highlight nodes whose label contains this text.",
-            )
-
-            fullscreen = st.checkbox(
-                "Full screen graph",
-                value=False,
-                key="fullscreen",
-                help="Hide most padding to maximize graph space.",
-            )
-
-        # Optional raw data
-        if show_raw_data:
-            with st.expander("Nodes and edges (raw data)", expanded=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**Nodes (all unique parts)**")
-                    st.write(topology.nodes)
-                with col2:
-                    st.markdown("**Edges (Parent → Child relationships)**")
-                    st.write(topology.edges)
-
-        # --- Build NetworkX graph (with subtree focusing) ---
-        G = nx.DiGraph()
-
-        # Support subtree view if BOMExplosionApp exposes get_subtree(root)
-        if selected_root and hasattr(topology, "get_subtree"):
-            try:
-                sub_nodes, sub_edges = topology.get_subtree(selected_root)
-                nodes_iter = sub_nodes
-                edges_iter = sub_edges
-            except Exception:
-                # Fallback to full topology if something goes wrong
-                nodes_iter = topology.nodes
-                edges_iter = topology.edges
+    # 2. CONTROLS
+    col_search, col_layout = st.columns([3, 1])
+    
+    with col_search:
+        all_nodes = ["All"] + sorted(list(processor.G.nodes))
+        focus_node = st.selectbox("🔍 Trace Component (Search SKU)", all_nodes, index=0)
+        
+        if focus_node != "All":
+            trace_mode = st.radio("View Mode", ["Explosion (Downstream)", "Traceability (Upstream to Finished Good)"], horizontal=True)
+            is_trace_root = True if "Upstream" in trace_mode else False
         else:
-            nodes_iter = topology.nodes
-            edges_iter = topology.edges
+            is_trace_root = False
 
-        # Example: optional metadata dict on topology (add in BOMExplosionApp)
-        # topology.node_data: dict[node] = {"level": int, "total_quantity": float, "type": str, ...}
-        node_data = getattr(topology, "node_data", {})
+    with col_layout:
+        st.write(" ") # spacer
+        show_physics = st.checkbox("Enable Physics", value=False, help="Turn on for fun, off for structure")
 
-        # Node styling: color by level, size by total quantity, highlight search
-        level_colors = [
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
-        ]
-
-        for node in nodes_iter:
-            data = node_data.get(node, {})
-            level = data.get("level", 0)
-            total_qty = data.get("total_quantity", 1)
-            node_type = data.get("type", "")
-
-            # Base color from level
-            color = level_colors[level % len(level_colors)]
-
-            # Search highlight
-            highlight = bool(search_term and search_term.lower() in str(node).lower())
-            if highlight:
-                color = "#ff0000"  # red highlight
-
-            # Node size from total quantity (clamped)
-            try:
-                qty_val = float(total_qty)
-            except Exception:
-                qty_val = 1.0
-            size = min(60, max(10, qty_val * 2))
-
-            title_parts = [f"{node}"]
-            title_parts.append(f"Level: {level}")
-            title_parts.append(f"Total qty: {total_qty}")
-            if node_type:
-                title_parts.append(f"Type: {node_type}")
-
-            G.add_node(
-                node,
-                label=str(node),
-                color=color,
-                size=size,
-                title="<br>".join(title_parts),
-            )
-
-        # Edge styling: thickness and color by quantity
-        for edge in edges_iter:
-            parent = edge["from"]
-            child = edge["to"]
-            qty = edge.get("quantity", 1)
-
-            try:
-                qty_val = float(qty)
-            except Exception:
-                qty_val = 1.0
-
-            width = min(10, max(1, qty_val))  # 1–10 px
-            color = "#2ca02c" if qty_val > 1 else "#999999"
-
-            G.add_edge(
-                parent,
-                child,
-                quantity=qty,
-                title=f"Qty: {qty}",
-                width=width,
-                color=color,
-            )
-
-        # --- Render with PyVis ---
-        # Initial height is a placeholder; JS/CSS will stretch to viewport height.
-        net = Network(height="600px", width="100%", directed=True)
-
-        # Inject physics_enabled and sliders into valid JSON options
-        options_json = f"""
-        {{
-          "layout": {{
-            "hierarchical": {{
-              "enabled": true,
-              "direction": "LR",
-              "sortMethod": "hubsize",
-              "levelSeparation": {level_separation},
-              "nodeSpacing": {node_spacing},
-              "treeSpacing": 200
-            }}
-          }},
-          "physics": {{
-            "enabled": {str(physics_enabled).lower()},
-            "hierarchicalRepulsion": {{
-              "nodeDistance": {node_distance},
-              "centralGravity": 0.0,
-              "springLength": 100,
-              "springConstant": 0.02,
-              "damping": 0.09
-            }}
-          }}
-        }}
+    # 3. GRAPH PROCESSING
+    sub_G = processor.get_filtered_graph(focus_node, is_trace_root)
+    
+    # 4. PYVIS VISUALIZATION
+    net = Network(height="700px", width="100%", directed=True, bgcolor="#ffffff", font_color="black")
+    
+    # Add Nodes with Styles
+    for node in sub_G.nodes:
+        attrs = processor.G.nodes[node]
+        m_type = attrs.get('type', 'DEFAULT')
+        
+        # Fallback for unknown types
+        style = MATERIAL_STYLES.get(m_type, MATERIAL_STYLES["DEFAULT"])
+        
+        # Tooltip generation
+        tooltip = f"""
+        <b>{node}</b><br>
+        Type: {m_type}<br>
+        Desc: {attrs.get('desc')}<br>
+        Level: {attrs.get('level')}
         """
-        net.set_options(options_json)
+        
+        net.add_node(
+            node,
+            label=node,
+            title=tooltip,
+            color=style['color'],
+            shape=style['shape'],
+            size=25 if m_type in ['CURT', 'FERT'] else 15,
+            level=attrs.get('level') # Important for hierarchical layout
+        )
 
-        net.from_nx(G)
+    # Add Edges with variable thickness (Mass Flow)
+    for u, v, data in sub_G.edges(data=True):
+        weight = data.get('weight', 1.0)
+        # Logarithmic scaling for width so small screws don't disappear and big tires don't cover screen
+        width = 1 + np.log1p(weight) * 2 
+        
+        net.add_edge(
+            u, v,
+            title=f"Qty: {weight} {data.get('unit', '')}",
+            width=width,
+            color="#CBD5E1" # Light slate grey for edges
+        )
 
-        html_file = "bom_topology.html"
-        net.save_graph(html_file)
-
-        with open(html_file, "r", encoding="utf-8") as f:
-            html = f.read()
-
-        # CSS + JS to make the network take (almost) the full viewport height.
-        # The Streamlit iframe will be very tall; network container will be resized inside.
-        offset = 140 if fullscreen else 220  # smaller offset in fullscreen mode
-
-        resize_script = f"""
-        <style>
-          html, body {{
-            height: 100%;
-            margin: 0;
-            padding: 0;
-          }}
-          #mynetwork {{
-            height: 100vh !important;
-          }}
-        </style>
-        <script type="text/javascript">
-        function resizeNetwork() {{
-            var net = document.getElementById('mynetwork');
-            if (!net) return;
-            var offset = {offset};
-            var h = window.innerHeight - offset;
-            if (h < 600) {{ h = 600; }}
-            net.style.height = h + "px";
+    # 5. LAYOUT ENGINE (The Secret Sauce)
+    # Using Hierarchical Repulsion creates the "Lane" view planners love
+    net.set_options(f"""
+    {{
+      "layout": {{
+        "hierarchical": {{
+          "enabled": true,
+          "direction": "LR",
+          "sortMethod": "directed",
+          "levelSeparation": 250,
+          "nodeSpacing": 150
         }}
-        window.addEventListener('load', resizeNetwork);
-        window.addEventListener('resize', resizeNetwork);
-        </script>
-        """
+      }},
+      "physics": {{
+        "enabled": {str(show_physics).lower()},
+        "hierarchicalRepulsion": {{
+          "centralGravity": 0.0,
+          "springLength": 100,
+          "springConstant": 0.01,
+          "nodeDistance": 120,
+          "damping": 0.09
+        }}
+      }},
+      "interaction": {{
+        "navigationButtons": true,
+        "keyboard": true
+      }}
+    }}
+    """)
 
-        final_html = html.replace("</body>", resize_script + "</body>")
+    # 6. RENDER
+    # Trick to handle PyVis in Streamlit efficiently
+    path = "/tmp"
+    net.save_graph(f"{path}/bom_graph.html")
+    HtmlFile = open(f"{path}/bom_graph.html", 'r', encoding='utf-8')
+    source_code = HtmlFile.read() 
+    components.html(source_code, height=710, scrolling=False)
 
-        # Optional extra CSS to reduce padding in "fullscreen" mode
-        if fullscreen:
-            st.markdown(
-                """
-                <style>
-                header, footer {
-                    visibility: hidden;
-                    height: 0;
-                }
-                .block-container {
-                    padding-top: 0rem !important;
-                    padding-bottom: 0rem !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
+    # 7. DETAILS PANEL (Rendered after graph selection context)
+    render_details_panel(processor.G, focus_node)
 
-        st.subheader("Graph view")
+    # 8. DATA TABLE TAB
+    with st.expander("📊 View Underlying Data"):
+        st.dataframe(df)
 
-        # Height is a large fallback; inner JS will adapt to viewport.
-        components.html(final_html, height=1600, scrolling=False)
-
-    else:
-        st.info("Upload a BOM file to see the topology.")
-
-# =========================
-# TREE VIEW TAB (alternative to graph)
-# =========================
-with tab_tree:
-    st.subheader("Indented tree view")
-
-    if app.has_data():
-        df_view = app.get_dataframe().copy()
-
-        # Best-effort tree indentation: if there's a 'Level' column, indent the component number
-        level_col_candidates = [c for c in df_view.columns if c.lower() == "level"]
-        comp_col_candidates = [
-            c for c in df_view.columns if "component" in c.lower() and "number" in c.lower()
-        ]
-
-        if level_col_candidates and comp_col_candidates:
-            level_col = level_col_candidates[0]
-            comp_col = comp_col_candidates[0]
-
-            try:
-                df_view["__indent_label"] = df_view.apply(
-                    lambda row: " " * int(row[level_col]) * 4 + str(row[comp_col]),
-                    axis=1,
-                )
-
-                display_cols = ["__indent_label"] + [
-                    c for c in df_view.columns if c not in ["__indent_label"]
-                ]
-
-                st.dataframe(df_view[display_cols].rename(columns={"__indent_label": "Component (indented)"}))
-            except Exception as e:
-                st.warning(f"Could not build indented tree view: {e}")
-                st.dataframe(df_view)
-        else:
-            st.info(
-                "To show an indented tree view, ensure your data has 'Level' and 'Component number' columns."
-            )
-            st.dataframe(df_view)
-    else:
-        st.info("Upload a BOM file to view the tree.")
+else:
+    st.info("👋 Upload a standard SAP BOM export to begin planning.")
+    st.markdown("""
+    **Required Columns (Flexible naming):**
+    - `Level` (1, 2, 3...)
+    - `Component` (Material Number)
+    - `Material Type` (FERT, HALB, ROH, CMPD...)
+    - `Quantity`
+    """)
