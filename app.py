@@ -89,7 +89,10 @@ def normalize_material_type(raw_type):
 
 def load_data(uploaded_file):
     try:
+        # 1. Reset file pointer to avoid empty read on re-runs
         uploaded_file.seek(0)
+        
+        # 2. Read with encoding safety
         if uploaded_file.name.lower().endswith('.csv'):
             try:
                 df = pd.read_csv(uploaded_file)
@@ -101,7 +104,7 @@ def load_data(uploaded_file):
 
         if df.empty: return None
 
-        # Column Mapping
+        # 3. Column Mapping
         col_level = next((c for c in df.columns if any(x in str(c).lower() for x in ["level", "lvl"])), None)
         col_comp = next((c for c in df.columns if any(x in str(c).lower() for x in ["component", "material", "object"])), None)
         col_type = find_material_type_column(df)
@@ -113,7 +116,7 @@ def load_data(uploaded_file):
             st.error(f"Missing Level/Component columns. Found: {list(df.columns)}")
             return None
 
-        # Data Cleaning
+        # 4. Data Cleaning
         clean_df = pd.DataFrame()
         clean_df["Level"] = pd.to_numeric(df[col_level], errors='coerce').fillna(0).astype(int)
         clean_df["Component"] = df[col_comp].astype(str).str.strip()
@@ -122,7 +125,7 @@ def load_data(uploaded_file):
         clean_df["Quantity"] = pd.to_numeric(df[col_qty], errors='coerce').fillna(1.0) if col_qty else 1.0
 
         if col_type:
-            # FIX: Use .str accessor properly
+            # FIX: Use .str accessor properly to avoid "Series object has no attribute upper"
             clean_df["Raw_Type"] = df[col_type].astype(str).str.strip().str.upper()
             clean_df["Category"] = clean_df["Raw_Type"].apply(normalize_material_type)
         else:
@@ -148,8 +151,7 @@ def build_network(df):
         
         style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # FIX: Tooltip HTML - Stripped of newlines to prevent rendering errors
-        # CSS is inline to ensure it works inside the canvas
+        # Tooltip HTML - Clean inline CSS
         tooltip_html = (
             f"<div style='background-color: white; padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-family: Arial;'>"
             f"<b style='font-size: 14px; color: #333;'>{comp}</b><br>"
@@ -163,13 +165,12 @@ def build_network(df):
         G.add_node(
             comp, 
             label=comp, 
-            title=tooltip_html,   # Clean HTML string
+            title=tooltip_html,   
             color=style["color"], # Explicit Color
             shape=style["shape"],
             size=25 if level == 1 else 18,
             level=level,
-            # IMPORTANT: Removed 'group' parameter. 
-            # This prevents PyVis from overriding our custom colors with default group colors.
+            # IMPORTANT: Removed 'group' parameter to ensure custom colors work
         )
 
         # Parent-Child Logic
@@ -182,7 +183,7 @@ def build_network(df):
             if parent_level in stack:
                 parent = stack[parent_level]
                 w = 1 + np.log1p(row['Quantity']) if row['Quantity'] > 0 else 1
-                G.add_edge(parent, comp, width=w, color="#CBD5E1") # Light Grey Edge
+                G.add_edge(parent, comp, width=w, color="#CBD5E1") 
     
     return G
 
@@ -219,12 +220,11 @@ if uploaded_file is not None:
     df = load_data(uploaded_file)
     
     if df is not None:
-        # Debugger for your peace of mind
+        # Debugger for column verification
         with st.expander("🔍 Debug: Check Color Logic"):
-            st.markdown("Check if your 'Raw Materials' are actually classified as 'RAW' below:")
+            st.markdown(f"**Found Material Type Column:** `{find_material_type_column(df) or 'Not Found'}`")
             st.dataframe(
                 df[["Level", "Component", "Raw_Type", "Category"]]
-                .drop_duplicates("Component")
                 .head(10)
             )
 
@@ -240,7 +240,7 @@ if uploaded_file is not None:
         # PyVis Setup
         net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#333", directed=True)
         
-        # Highlight Logic
+        # Search Highlighting
         if search:
             for n in G.nodes:
                 if search.lower() in n.lower():
@@ -250,23 +250,31 @@ if uploaded_file is not None:
 
         net.from_nx(G)
         
-        # Interaction Options (Highlight on Click)
+        # Options: STRICT JSON ONLY (No JS Functions)
+        # Using standard JSON keys for highlighting colors
         net.set_options("""
         {
           "nodes": {
             "borderWidth": 1,
             "borderWidthSelected": 2,
-            "chosen": {
-                "node": function(values, id, selected, hovering) {
-                    values.color = "#F59E0B";  // Orange when clicked
-                    values.borderColor = "#D97706";
-                    values.size = 30;
-                }
+            "color": {
+              "highlight": {
+                "border": "#D97706",
+                "background": "#F59E0B"
+              },
+              "hover": {
+                "border": "#D97706",
+                "background": "#F59E0B"
+              }
             },
             "font": { "size": 14, "face": "Segoe UI" }
           },
           "edges": {
-            "color": { "color": "#CBD5E1", "highlight": "#F59E0B" },
+            "color": { 
+                "color": "#CBD5E1", 
+                "highlight": "#F59E0B",
+                "hover": "#F59E0B"
+            },
             "smooth": { "type": "cubicBezier", "forceDirection": "horizontal", "roundness": 0.4 }
           },
           "interaction": {
@@ -291,6 +299,7 @@ if uploaded_file is not None:
         """)
 
         try:
+            # Save to local file
             net.save_graph("bom_viz.html")
             with open("bom_viz.html", 'r', encoding='utf-8') as f:
                 source_html = f.read()
