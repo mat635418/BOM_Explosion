@@ -4,312 +4,216 @@ import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
 import numpy as np
-import io
+import os
 
 # ==========================================
-# CONFIGURATION & STYLING
+# 1. PAGE CONFIG & STYLING
 # ==========================================
-st.set_page_config(page_title="SAP BOM Cockpit", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="SAP BOM Visualizer", layout="wide")
 
-# SAP Material Type Color Palette
-MATERIAL_STYLES = {
-    "CURT": {"color": "#1E3A8A", "shape": "box", "label": "Finished Good (CURT)"},      # Deep Blue
-    "FERT": {"color": "#1E3A8A", "shape": "box", "label": "Finished Good (FERT)"},
-    "GRET": {"color": "#0EA5E9", "shape": "box", "label": "Green Tire (GRET)"},          # Sky Blue
-    "ASSM": {"color": "#0D9488", "shape": "diamond", "label": "Assembly (ASSM)"},        # Teal
-    "HALB": {"color": "#0D9488", "shape": "diamond", "label": "Semi-Finished (HALB)"},
-    "GUM":  {"color": "#D946EF", "shape": "star", "label": "Rubber/Gum (GUM)"},          # Magenta
-    "CMPD": {"color": "#9333EA", "shape": "hexagon", "label": "Compound (CMPD)"},        # Purple
-    "RAW":  {"color": "#16A34A", "shape": "dot", "label": "Raw Material (RAW)"},         # Green
-    "ROH":  {"color": "#16A34A", "shape": "dot", "label": "Raw Material (ROH)"},
-    "DEFAULT": {"color": "#9CA3AF", "shape": "ellipse", "label": "Other"}               # Grey
-}
-
-# Custom CSS for the dashboard feel
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 15px;
-        border-radius: 10px;
-        border-left: 5px solid #1E3A8A;
-    }
-    .stApp header {visibility: hidden;}
     .block-container {padding-top: 1rem !important;}
+    div[data-testid="stExpander"] details summary p {font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# LOGIC CLASS
-# ==========================================
-class SAPBOMProcessor:
-    def __init__(self, df):
-        self.df = df
-        self.G = nx.DiGraph()
-        self.root = None
-        self._build_graph()
-
-    def _clean_columns(self):
-        # Normalize column names for flexibility
-        cols = {c: c.lower().strip() for c in self.df.columns}
-        self.df.rename(columns=cols, inplace=True)
-        
-        # Map known variations to standard keys
-        standard_map = {}
-        for c in self.df.columns:
-            if 'component' in c and 'number' in c: standard_map[c] = 'component'
-            elif 'level' in c: standard_map[c] = 'level'
-            elif 'material' in c and 'type' in c: standard_map[c] = 'type'
-            elif 'qty' in c: standard_map[c] = 'qty'
-            elif 'unit' in c: standard_map[c] = 'unit'
-            elif 'description' in c: standard_map[c] = 'desc'
-            elif 'mrp' in c: standard_map[c] = 'mrp'
-            elif 'production' in c and 'version' in c: standard_map[c] = 'ver'
-
-        self.df.rename(columns=standard_map, inplace=True)
-        
-        # Fill missing values
-        if 'type' not in self.df.columns: self.df['type'] = 'DEFAULT'
-        if 'qty' not in self.df.columns: self.df['qty'] = 1.0
-        self.df['level'] = pd.to_numeric(self.df['level'], errors='coerce').fillna(0).astype(int)
-
-    def _build_graph(self):
-        self._clean_columns()
-        
-        stack = {} # Stores {level: node_id}
-        
-        for _, row in self.df.iterrows():
-            level = row['level']
-            comp = str(row['component']).strip()
-            m_type = str(row.get('type', 'DEFAULT')).strip()
-            
-            # Store node attributes
-            attrs = {
-                'type': m_type,
-                'desc': str(row.get('desc', '')),
-                'unit': str(row.get('unit', '')),
-                'mrp': str(row.get('mrp', '-')),
-                'ver': str(row.get('ver', '-')),
-                'level': level
-            }
-            self.G.add_node(comp, **attrs)
-            
-            # Identify Root
-            if level == 1:
-                self.root = comp
-                
-            # Track hierarchy
-            stack[level] = comp
-            
-            # Create Edge (Parent -> Child)
-            if level > 1:
-                parent_level = level - 1
-                # Find the nearest parent in the stack
-                while parent_level > 0 and parent_level not in stack:
-                    parent_level -= 1
-                
-                if parent_level in stack:
-                    parent = stack[parent_level]
-                    qty = float(row.get('qty', 1.0))
-                    self.G.add_edge(parent, comp, weight=qty, unit=row.get('unit', ''))
-
-    def get_filtered_graph(self, focus_node=None, trace_to_root=False):
-        """
-        Returns a subgraph.
-        If trace_to_root is True: Returns the path from focus_node UP to the root.
-        If trace_to_root is False: Returns the subtree starting DOWN from focus_node.
-        """
-        if not focus_node or focus_node == "All":
-            return self.G
-
-        if trace_to_root:
-            # Upstream Trace
-            ancestors = nx.ancestors(self.G, focus_node)
-            ancestors.add(focus_node)
-            return self.G.subgraph(ancestors)
-        else:
-            # Downstream Explosion
-            descendants = nx.descendants(self.G, focus_node)
-            descendants.add(focus_node)
-            return self.G.subgraph(descendants)
+# Color Palette for SAP Material Types
+STYLE_MAP = {
+    "CURT": {"color": "#0047AB", "shape": "box", "label": "FG (CURT)"},      # Cobalt Blue
+    "FERT": {"color": "#0047AB", "shape": "box", "label": "FG (FERT)"},
+    "HALB": {"color": "#008080", "shape": "diamond", "label": "Semi-Finished"}, # Teal
+    "ASSM": {"color": "#008080", "shape": "diamond", "label": "Assembly"},
+    "CMPD": {"color": "#800080", "shape": "hexagon", "label": "Compound"},   # Purple
+    "RAW":  {"color": "#228B22", "shape": "dot", "label": "Raw Material"},   # Forest Green
+    "ROH":  {"color": "#228B22", "shape": "dot", "label": "Raw Material"},
+    "VERP": {"color": "#DAA520", "shape": "square", "label": "Packaging"},   # Goldenrod
+    "DEFAULT": {"color": "#708090", "shape": "ellipse", "label": "Other"}   # Slate Grey
+}
 
 # ==========================================
-# UI COMPONENTS
+# 2. ROBUST DATA LOADING
 # ==========================================
-def render_legend():
-    """Renders a visual legend in the Sidebar"""
-    st.sidebar.markdown("### 🎨 Material Legend")
-    legend_html = ""
-    for k, v in MATERIAL_STYLES.items():
-        if k in ["FERT", "HALB", "ROH"]: continue # Skip duplicate standard keys for cleanliness
-        legend_html += f"""
-        <div style="display: flex; align-items: center; margin-bottom: 5px;">
-            <div style="width: 15px; height: 15px; background-color: {v['color']}; 
-                        border-radius: {'50%' if v['shape']=='dot' else '2px'}; margin-right: 10px;"></div>
-            <span style="font-size: 12px;">{v['label']}</span>
-        </div>
-        """
-    st.sidebar.markdown(legend_html, unsafe_allow_html=True)
+def find_column(df, keywords):
+    """Searches for a column containing any of the keywords (case insensitive)."""
+    for col in df.columns:
+        for key in keywords:
+            if key.lower() in col.lower():
+                return col
+    return None
 
-def render_details_panel(graph, selected_node):
-    """Side panel for deep dive details"""
-    if selected_node and selected_node in graph.nodes:
-        data = graph.nodes[selected_node]
-        st.sidebar.markdown("---")
-        st.sidebar.subheader(f"📦 {selected_node}")
-        
-        st.sidebar.markdown(f"**Desc:** {data.get('desc', 'N/A')}")
-        
-        c1, c2 = st.sidebar.columns(2)
-        c1.metric("Type", data.get('type', 'N/A'))
-        c2.metric("Level", data.get('level', 'N/A'))
-        
-        c3, c4 = st.sidebar.columns(2)
-        c3.markdown(f"**MRP Type:** `{data.get('mrp', '-')}`")
-        c4.markdown(f"**Prod Ver:** `{data.get('ver', '-')}`")
-        
-        # Calculate usage info
-        in_degree = graph.in_degree(selected_node)
-        out_degree = graph.out_degree(selected_node)
-        st.sidebar.info(f"Used in {in_degree} places | Has {out_degree} components")
-
-# ==========================================
-# MAIN APP
-# ==========================================
-st.title("🏭 SAP BOM Planner Cockpit")
-
-# 1. UPLOAD
-uploaded_file = st.sidebar.file_uploader("Upload SAP BOM (CSV/Excel)", type=["csv", "xlsx"])
-
-if uploaded_file:
-    # Load Data
+def load_data(uploaded_file):
     try:
-        if uploaded_file.name.endswith('.csv'):
+        if uploaded_file.name.lower().endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
             df = pd.read_excel(uploaded_file)
         
-        processor = SAPBOMProcessor(df)
-        st.sidebar.success(f"Loaded {len(processor.G.nodes)} materials")
-        render_legend()
-        
-    except Exception as e:
-        st.error(f"Error parsing file: {e}")
-        st.stop()
+        # 1. Identify critical columns dynamically
+        col_level = find_column(df, ["level", "lvl"])
+        col_comp = find_column(df, ["component", "material", "object"])
+        col_desc = find_column(df, ["desc", "description", "text"])
+        col_type = find_column(df, ["type", "cat", "mat"]) # Material Type
+        col_qty = find_column(df, ["qty", "quantity", "amount"])
+        col_unit = find_column(df, ["unit", "uom", "bun"])
 
-    # 2. CONTROLS
-    col_search, col_layout = st.columns([3, 1])
-    
-    with col_search:
-        all_nodes = ["All"] + sorted(list(processor.G.nodes))
-        focus_node = st.selectbox("🔍 Trace Component (Search SKU)", all_nodes, index=0)
+        if not col_level or not col_comp:
+            st.error(f"Could not find 'Level' or 'Component' columns. Found: {list(df.columns)}")
+            return None
+
+        # 2. Standardize DataFrame
+        clean_df = pd.DataFrame()
+        clean_df["Level"] = pd.to_numeric(df[col_level], errors='coerce').fillna(0).astype(int)
+        clean_df["Component"] = df[col_comp].astype(str).str.strip()
         
-        if focus_node != "All":
-            trace_mode = st.radio("View Mode", ["Explosion (Downstream)", "Traceability (Upstream to Finished Good)"], horizontal=True)
-            is_trace_root = True if "Upstream" in trace_mode else False
+        clean_df["Description"] = df[col_desc] if col_desc else ""
+        clean_df["Type"] = df[col_type] if col_type else "DEFAULT"
+        clean_df["Unit"] = df[col_unit] if col_unit else ""
+        
+        # Clean Quantity (handle "1 PC" strings if present)
+        if col_qty:
+            # Force convert to string, remove non-numeric chars except dot, convert to float
+            clean_df["Quantity"] = pd.to_numeric(df[col_qty], errors='coerce').fillna(1.0)
         else:
-            is_trace_root = False
+            clean_df["Quantity"] = 1.0
 
-    with col_layout:
-        st.write(" ") # spacer
-        show_physics = st.checkbox("Enable Physics", value=False, help="Turn on for fun, off for structure")
+        return clean_df
 
-    # 3. GRAPH PROCESSING
-    sub_G = processor.get_filtered_graph(focus_node, is_trace_root)
-    
-    # 4. PYVIS VISUALIZATION
-    net = Network(height="700px", width="100%", directed=True, bgcolor="#ffffff", font_color="black")
-    
-    # Add Nodes with Styles
-    for node in sub_G.nodes:
-        attrs = processor.G.nodes[node]
-        m_type = attrs.get('type', 'DEFAULT')
+    except Exception as e:
+        st.error(f"Data Load Error: {e}")
+        return None
+
+# ==========================================
+# 3. GRAPH CONSTRUCTION
+# ==========================================
+def build_network(df):
+    G = nx.DiGraph()
+    stack = {} # Stores {level: component_id}
+
+    for _, row in df.iterrows():
+        level = row["Level"]
+        comp = row["Component"]
+        m_type = str(row["Type"]).upper()
         
-        # Fallback for unknown types
-        style = MATERIAL_STYLES.get(m_type, MATERIAL_STYLES["DEFAULT"])
+        # Add Node
+        style = STYLE_MAP.get(m_type, STYLE_MAP["DEFAULT"])
         
-        # Tooltip generation
-        tooltip = f"""
-        <b>{node}</b><br>
-        Type: {m_type}<br>
-        Desc: {attrs.get('desc')}<br>
-        Level: {attrs.get('level')}
-        """
+        # Generate Tooltip
+        title_html = f"<b>{comp}</b><br>Type: {m_type}<br>Level: {level}<br>Qty: {row['Quantity']} {row['Unit']}<br>{row['Description']}"
         
-        net.add_node(
-            node,
-            label=node,
-            title=tooltip,
-            color=style['color'],
-            shape=style['shape'],
-            size=25 if m_type in ['CURT', 'FERT'] else 15,
-            level=attrs.get('level') # Important for hierarchical layout
+        G.add_node(
+            comp, 
+            label=comp, 
+            title=title_html,
+            color=style["color"],
+            shape=style["shape"],
+            size=25 if level == 1 else 15,
+            level=level,  # Required for Hierarchical layout
+            group=m_type  # Helpful for internal PyVis grouping
         )
 
-    # Add Edges with variable thickness (Mass Flow)
-    for u, v, data in sub_G.edges(data=True):
-        weight = data.get('weight', 1.0)
-        # Logarithmic scaling for width so small screws don't disappear and big tires don't cover screen
-        width = 1 + np.log1p(weight) * 2 
+        # Logic: Find Parent
+        # The parent is the active node at (level - 1)
+        stack[level] = comp
         
-        net.add_edge(
-            u, v,
-            title=f"Qty: {weight} {data.get('unit', '')}",
-            width=width,
-            color="#CBD5E1" # Light slate grey for edges
-        )
+        if level > 1:
+            parent_level = level - 1
+            # Backtrack stack to find nearest parent (handles skipped levels safely)
+            while parent_level > 0 and parent_level not in stack:
+                parent_level -= 1
+            
+            if parent_level in stack:
+                parent = stack[parent_level]
+                # Logarithmic width for edges based on quantity
+                qty_val = row['Quantity']
+                width = 1 + np.log1p(qty_val) if qty_val > 0 else 1
+                
+                G.add_edge(parent, comp, width=width, title=f"Qty: {qty_val}")
+    
+    return G
 
-    # 5. LAYOUT ENGINE (The Secret Sauce)
-    # Using Hierarchical Repulsion creates the "Lane" view planners love
-    net.set_options(f"""
-    {{
-      "layout": {{
-        "hierarchical": {{
-          "enabled": true,
-          "direction": "LR",
-          "sortMethod": "directed",
-          "levelSeparation": 250,
-          "nodeSpacing": 150
+# ==========================================
+# 4. MAIN APP LAYOUT
+# ==========================================
+st.title("🏭 SAP BOM Visualization (Robust)")
+
+with st.sidebar:
+    st.header("1. Upload Data")
+    uploaded_file = st.file_uploader("Upload BOM (CSV/Excel)", type=["csv", "xlsx"])
+    
+    st.header("2. View Settings")
+    layout_type = st.radio("Layout Direction", ["Left-to-Right (Process Flow)", "Top-Down (Org Chart)"], index=0)
+    physics = st.checkbox("Enable Physics (Wobbly)", value=False)
+    
+    st.markdown("---")
+    st.markdown("**Legend:**")
+    for k, v in STYLE_MAP.items():
+        if k not in ["FERT", "ROH"]: # Dedupe
+            st.markdown(f"<span style='color:{v['color']}; font-size:20px'>●</span> {v['label']}", unsafe_allow_html=True)
+
+if uploaded_file is not None:
+    df = load_data(uploaded_file)
+    
+    if df is not None:
+        # Show Data Preview
+        with st.expander("Show Raw Data Table", expanded=False):
+            st.dataframe(df)
+
+        # Build Graph
+        G = build_network(df)
+        
+        # Filtering (Optional)
+        st.subheader(f"Explosion for: {df.iloc[0]['Component']}")
+        search_term = st.text_input("Highlight Component (Type to search)", "")
+        
+        # PyVis Setup
+        net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="black", directed=True)
+        
+        # Apply Search Highlighting
+        if search_term:
+            for node in G.nodes:
+                if search_term.lower() in node.lower():
+                    G.nodes[node]['color'] = "#FF0000" # Red for match
+                    G.nodes[node]['size'] = 30
+        
+        net.from_nx(G)
+
+        # Layout Configuration
+        direction = "LR" if "Left" in layout_type else "UD"
+        
+        net.set_options(f"""
+        {{
+            "layout": {{
+                "hierarchical": {{
+                    "enabled": true,
+                    "direction": "{direction}",
+                    "sortMethod": "directed",
+                    "levelSeparation": 200,
+                    "nodeSpacing": 150
+                }}
+            }},
+            "physics": {{
+                "enabled": {str(physics).lower()},
+                "hierarchicalRepulsion": {{
+                    "nodeDistance": 150
+                }}
+            }}
         }}
-      }},
-      "physics": {{
-        "enabled": {str(show_physics).lower()},
-        "hierarchicalRepulsion": {{
-          "centralGravity": 0.0,
-          "springLength": 100,
-          "springConstant": 0.01,
-          "nodeDistance": 120,
-          "damping": 0.09
-        }}
-      }},
-      "interaction": {{
-        "navigationButtons": true,
-        "keyboard": true
-      }}
-    }}
-    """)
+        """)
 
-    # 6. RENDER
-    # Trick to handle PyVis in Streamlit efficiently
-    path = "/tmp"
-    net.save_graph(f"{path}/bom_graph.html")
-    HtmlFile = open(f"{path}/bom_graph.html", 'r', encoding='utf-8')
-    source_code = HtmlFile.read() 
-    components.html(source_code, height=710, scrolling=False)
-
-    # 7. DETAILS PANEL (Rendered after graph selection context)
-    render_details_panel(processor.G, focus_node)
-
-    # 8. DATA TABLE TAB
-    with st.expander("📊 View Underlying Data"):
-        st.dataframe(df)
+        # Save and Display
+        try:
+            # Save locally to current directory (safer than /tmp on some OS)
+            net.save_graph("bom_viz.html")
+            
+            # Read back and display
+            with open("bom_viz.html", 'r', encoding='utf-8') as f:
+                source_html = f.read()
+            
+            components.html(source_html, height=800, scrolling=False)
+            
+        except Exception as e:
+            st.error(f"Error displaying graph: {e}")
 
 else:
-    st.info("👋 Upload a standard SAP BOM export to begin planning.")
-    st.markdown("""
-    **Required Columns (Flexible naming):**
-    - `Level` (1, 2, 3...)
-    - `Component` (Material Number)
-    - `Material Type` (FERT, HALB, ROH, CMPD...)
-    - `Quantity`
-    """)
+    st.info("Please upload your BOM file to begin.")
