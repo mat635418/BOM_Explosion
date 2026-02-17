@@ -4,14 +4,12 @@ import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
 import numpy as np
-import os
 
 # ==========================================
-# 1. PAGE CONFIG & PASTEL STYLING
+# 1. PAGE CONFIG & STYLING
 # ==========================================
 st.set_page_config(page_title="SAP BOM Visualizer", layout="wide", page_icon="🏭")
 
-# Custom CSS for cleaner look
 st.markdown("""
 <style>
     .block-container {padding-top: 1rem !important;}
@@ -34,42 +32,38 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- PASTEL COLOR PALETTE (Functional Semantics) ---
-# Keys are the "Normalized" types we will assign in logic
-# Colors are Pastel Hex codes
 STYLE_MAP = {
-    "FG":       {"color": "#93C5FD", "shape": "box",      "label": "Finished Good", "desc": "CURT, FERT"}, # Pastel Blue
-    "ASSM":     {"color": "#5EEAD4", "shape": "diamond",  "label": "Assembly",      "desc": "ASSM, HALB"}, # Pastel Teal
-    "CMPD":     {"color": "#C084FC", "shape": "hexagon",  "label": "Compound",      "desc": "CMPD"},       # Pastel Purple
-    "RAW":      {"color": "#86EFAC", "shape": "dot",      "label": "Raw Material",  "desc": "RAW, ROH, LRAW"}, # Pastel Green
-    "GUM":      {"color": "#F9A8D4", "shape": "star",     "label": "Rubber/Gum",    "desc": "GUM"},        # Pastel Pink
-    "PACK":     {"color": "#FCD34D", "shape": "square",   "label": "Packaging",     "desc": "VERP"},       # Pastel Amber
-    "DEFAULT":  {"color": "#E5E7EB", "shape": "ellipse",  "label": "Other",         "desc": "Unknown"}     # Pastel Grey
+    "FG":       {"color": "#93C5FD", "shape": "box",      "label": "Finished Good", "desc": "CURT, FERT"},
+    "ASSM":     {"color": "#5EEAD4", "shape": "diamond",  "label": "Assembly",      "desc": "ASSM, HALB"},
+    "CMPD":     {"color": "#C084FC", "shape": "hexagon",  "label": "Compound",      "desc": "CMPD"},
+    "RAW":      {"color": "#86EFAC", "shape": "dot",      "label": "Raw Material",  "desc": "RAW, ROH, LRAW"},
+    "GUM":      {"color": "#F9A8D4", "shape": "star",     "label": "Rubber/Gum",    "desc": "GUM"},
+    "PACK":     {"color": "#FCD34D", "shape": "square",   "label": "Packaging",     "desc": "VERP"},
+    "DEFAULT":  {"color": "#E5E7EB", "shape": "ellipse",  "label": "Other",         "desc": "Unknown"}
 }
 
 # ==========================================
 # 2. DATA PROCESSING LOGIC
 # ==========================================
 def find_material_type_column(df):
-    """
-    Hunts for the Material Type column, explicitly ignoring 'MRP Type' or 'Item Category'.
-    """
-    # Priority 1: Specific Headers
+    """Safely hunts for Material Type, handling integer headers or weird casing."""
     target_headers = ["material type", "mat. type", "mat_type", "ptyp", "mtart"]
+    
+    # Check 1: Exact target matches
     for col in df.columns:
-        if any(t in col.lower() for t in target_headers):
+        c_str = str(col).lower()
+        if any(t in c_str for t in target_headers):
             return col
             
-    # Priority 2: 'Type' but not 'MRP'/'Item'/'Doc'
+    # Check 2: "Type" but not excluded words
     for col in df.columns:
-        c_low = col.lower()
-        if "type" in c_low and not any(x in c_low for x in ["mrp", "item", "doc", "class"]):
+        c_str = str(col).lower()
+        if "type" in c_str and not any(x in c_str for x in ["mrp", "item", "doc", "class"]):
             return col
     return None
 
 def normalize_material_type(raw_type):
-    """
-    Maps SAP codes (ROH, ZROH, CURT) to our 6 functional categories.
-    """
+    """Maps SAP codes to functional categories."""
     t = str(raw_type).upper().strip()
     
     if any(x in t for x in ["RAW", "ROH", "LRAW", "ZROH"]): return "RAW"
@@ -83,21 +77,33 @@ def normalize_material_type(raw_type):
 
 def load_data(uploaded_file):
     try:
+        # Reset file pointer to beginning
+        uploaded_file.seek(0)
+        
+        # Read file with safe encoding fallback
         if uploaded_file.name.lower().endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
+            try:
+                df = pd.read_csv(uploaded_file)
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding='latin1')
         else:
             df = pd.read_excel(uploaded_file)
         
+        if df.empty:
+            st.error("The uploaded file seems to be empty.")
+            return None
+
         # 1. Identify Columns
-        col_level = next((c for c in df.columns if any(x in c.lower() for x in ["level", "lvl"])), None)
-        col_comp = next((c for c in df.columns if any(x in c.lower() for x in ["component", "material", "object"])), None)
-        col_type = find_material_type_column(df) # Smart search
-        col_qty = next((c for c in df.columns if any(x in c.lower() for x in ["qty", "quantity", "amount"])), None)
-        col_unit = next((c for c in df.columns if any(x in c.lower() for x in ["unit", "uom", "bun"])), None)
-        col_desc = next((c for c in df.columns if any(x in c.lower() for x in ["desc", "description", "text"])), None)
+        col_level = next((c for c in df.columns if any(x in str(c).lower() for x in ["level", "lvl"])), None)
+        col_comp = next((c for c in df.columns if any(x in str(c).lower() for x in ["component", "material", "object"])), None)
+        col_type = find_material_type_column(df)
+        col_qty = next((c for c in df.columns if any(x in str(c).lower() for x in ["qty", "quantity", "amount"])), None)
+        col_unit = next((c for c in df.columns if any(x in str(c).lower() for x in ["unit", "uom", "bun"])), None)
+        col_desc = next((c for c in df.columns if any(x in str(c).lower() for x in ["desc", "description", "text"])), None)
 
         if not col_level or not col_comp:
-            st.error("Missing required columns: 'Level' or 'Component'")
+            st.error(f"Missing required columns (Level/Component). Found: {list(df.columns)}")
             return None
 
         # 2. Normalize Data
@@ -113,9 +119,10 @@ def load_data(uploaded_file):
         else:
             clean_df["Quantity"] = 1.0
 
-        # Type Logic (Raw SAP Type -> Normalized Functional Category)
+        # Type Logic (The Fix is here: .str.upper())
         if col_type:
-            clean_df["Raw_Type"] = df[col_type].astype(str).str.strip().upper()
+            # We must use .str.upper() on the Series, not .upper()
+            clean_df["Raw_Type"] = df[col_type].astype(str).str.strip().str.upper()
             clean_df["Category"] = clean_df["Raw_Type"].apply(normalize_material_type)
         else:
             clean_df["Raw_Type"] = "Unknown"
@@ -139,10 +146,9 @@ def build_network(df):
         comp = row["Component"]
         cat = row["Category"]
         
-        # Get Style config
         style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # Enhanced Tooltip HTML
+        # HTML Tooltip
         tooltip = f"""
         <div style='font-family: sans-serif; padding: 5px; min-width: 150px;'>
             <strong style='font-size: 14px;'>{comp}</strong><br>
@@ -156,12 +162,12 @@ def build_network(df):
         G.add_node(
             comp, 
             label=comp, 
-            title=tooltip, # HTML Tooltip
+            title=tooltip,
             color=style["color"],
             shape=style["shape"],
             size=25 if level == 1 else 18,
             level=level,
-            group=cat # For PyVis grouping
+            group=cat
         )
 
         # Parent-Child Logic
@@ -174,7 +180,6 @@ def build_network(df):
             if parent_level in stack:
                 parent = stack[parent_level]
                 
-                # Edge width based on Log Quantity
                 w = 1.0
                 if row['Quantity'] > 0:
                     w = 1 + np.log1p(row['Quantity'])
@@ -195,7 +200,6 @@ with st.sidebar:
     st.markdown("---")
     st.header("Legend")
     
-    # Dynamic Legend Loop
     for key, style in STYLE_MAP.items():
         st.markdown(f"""
         <div class="legend-item">
@@ -221,28 +225,26 @@ if uploaded_file is not None:
         # Build Graph
         G = build_network(df)
         
-        # Search & Filter
+        # Search
         col1, col2 = st.columns([3, 1])
         with col1:
             st.subheader(f"Structure: {df.iloc[0]['Component']}")
         with col2:
             search = st.text_input("🔍 Find Node", "")
 
-        # PyVis Configuration
+        # PyVis Setup
         net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#333", directed=True)
         
-        # Apply Search Highlighting
         if search:
             for n in G.nodes:
                 if search.lower() in n.lower():
-                    G.nodes[n]['color'] = "#EF4444" # Bright Red for search hit
+                    G.nodes[n]['color'] = "#EF4444"
                     G.nodes[n]['size'] = 30
                     G.nodes[n]['borderWidth'] = 3
 
         net.from_nx(G)
         
-        # ADVANCED OPTIONS: Interaction & Physics
-        # This defines how the click highlighting works (High contrast orange)
+        # Advanced Physics & Interaction options
         net.set_options("""
         {
           "nodes": {
@@ -297,7 +299,6 @@ if uploaded_file is not None:
         }
         """)
 
-        # Save & Render
         try:
             net.save_graph("bom_viz.html")
             with open("bom_viz.html", 'r', encoding='utf-8') as f:
