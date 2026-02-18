@@ -155,7 +155,7 @@ def build_network(df):
         
         style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # Safe HTML Tooltip (No Newlines) - Improved formatting
+        # Safe HTML Tooltip - Improved formatting with normalized whitespace
         html_content = (
             f"<div style='font-family: Arial, sans-serif; font-size: 13px; padding: 8px; color: #1a1a1a; background: white; border-radius: 4px;'>"
             f"<strong style='font-size: 15px; color: #2563eb;'>{comp}</strong><br/>"
