@@ -48,10 +48,10 @@ STYLE_MAP = {
     "FG":       {"color": "#93C5FD", "shape": "box",      "label": "Finished Good", "desc": "CURT, FERT"}, # Blue
     "ASSM":     {"color": "#5EEAD4", "shape": "diamond",  "label": "Assembly",      "desc": "ASSM, HALB"}, # Teal
     "CMPD":     {"color": "#C084FC", "shape": "hexagon",  "label": "Compound",      "desc": "CMPD"},       # Purple
-    "RAW":      {"color": "#86EFAC", "shape": "ellipse",  "label": "Raw Material",  "desc": "RAW, ROH"},   # Green (Now Ellipse)
+    "RAW":      {"color": "#86EFAC", "shape": "ellipse",  "label": "Raw Material",  "desc": "RAW, ROH"},   # Green
     "GUM":      {"color": "#F9A8D4", "shape": "star",     "label": "Rubber/Gum",    "desc": "GUM"},        # Pink
     "PACK":     {"color": "#FCD34D", "shape": "square",   "label": "Packaging",     "desc": "VERP"},       # Yellow
-    "DEFAULT":  {"color": "#E5E7EB", "shape": "dot",      "label": "Other",         "desc": "Unknown"}     # Grey (Now Dot)
+    "DEFAULT":  {"color": "#E5E7EB", "shape": "dot",      "label": "Other",         "desc": "Unknown"}     # Grey
 }
 
 # ==========================================
@@ -155,7 +155,7 @@ def build_network(df):
         
         style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # Safe HTML Tooltip - Improved formatting with normalized whitespace
+        # Safe HTML Tooltip
         html_content = (
             f"<div style='font-family: Arial, sans-serif; font-size: 13px; padding: 8px; color: #1a1a1a; background: white; border-radius: 4px;'>"
             f"<strong style='font-size: 15px; color: #2563eb;'>{comp}</strong><br/>"
@@ -198,7 +198,6 @@ def build_network(df):
                     f"</div>"
                 ).replace("\n", " ").replace("\r", " ").strip()
                 
-                # Don't set color on individual edges - let global options handle hover/highlight
                 G.add_edge(parent, comp, width=w, title=edge_tooltip) 
     
     return G
@@ -248,7 +247,7 @@ if df is not None:
     with col2:
         search = st.text_input("🔍 Find Node", "")
 
-    # --- TOPOLOGY LEGEND (Derived & Top-Displayed) ---
+    # --- TOPOLOGY LEGEND ---
     st.markdown('<div class="legend-container">', unsafe_allow_html=True)
     for key, style in STYLE_MAP.items():
         st.markdown(f"""
@@ -272,7 +271,7 @@ if df is not None:
     
     net.from_nx(G)
     
-    # --- ENHANCED HIGHLIGHT OPTIONS (Yellow/Orange for better visibility) ---
+    # --- ENHANCED HIGHLIGHT OPTIONS ---
     net.set_options("""
     {
       "nodes": {
@@ -327,6 +326,16 @@ if df is not None:
         net.save_graph("bom_viz.html")
         with open("bom_viz.html", 'r', encoding='utf-8') as f:
             source_html = f.read()
+
+        # ✅ FIX: pyvis does not expose vis.js's tooltip.useHtml option.
+        # Without it, vis.js renders the 'title' attribute as plain text,
+        # showing raw HTML tags instead of rendered HTML in the tooltip popup.
+        # We patch the generated HTML to inject this option before vis.Network initializes.
+        source_html = source_html.replace(
+            'var options = {',
+            'var options = {\n  "tooltip": {"useHtml": true},'
+        )
+
         components.html(source_html, height=800, scrolling=False)
     except Exception as e:
         st.error(f"Graph Render Error: {e}")
