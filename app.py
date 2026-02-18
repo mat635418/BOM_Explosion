@@ -198,7 +198,8 @@ def build_network(df):
                     f"</div>"
                 ).replace("\n", " ").replace("\r", " ").strip()
                 
-                G.add_edge(parent, comp, width=w, color="#CBD5E1", title=edge_tooltip) 
+                # Don't set color on individual edges - let global options handle hover/highlight
+                G.add_edge(parent, comp, width=w, title=edge_tooltip) 
     
     return G
 
