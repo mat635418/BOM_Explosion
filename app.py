@@ -155,18 +155,18 @@ def build_network(df):
         
         style = STYLE_MAP.get(cat, STYLE_MAP["DEFAULT"])
         
-        # Safe HTML Tooltip (No Newlines)
+        # Safe HTML Tooltip - Improved formatting with normalized whitespace
         html_content = (
-            f"<div style='font-family: Arial; font-size: 12px; padding: 5px; color: #333;'>"
-            f"  <strong style='font-size: 14px;'>{comp}</strong><br>"
-            f"  <span style='color: #666; font-style: italic;'>{row['Description']}</span><br>"
-            f"  <hr style='border: 0; border-top: 1px solid #ddd; margin: 5px 0;'>"
-            f"  Type: <b>{row['Raw_Type']}</b> ({cat})<br>"
-            f"  Level: {level}<br>"
-            f"  Qty: {row['Quantity']} {row['Unit']}"
+            f"<div style='font-family: Arial, sans-serif; font-size: 13px; padding: 8px; color: #1a1a1a; background: white; border-radius: 4px;'>"
+            f"<strong style='font-size: 15px; color: #2563eb;'>{comp}</strong><br/>"
+            f"<span style='color: #6b7280; font-style: italic; display: block; margin: 4px 0;'>{row['Description']}</span>"
+            f"<hr style='border: 0; border-top: 1px solid #e5e7eb; margin: 6px 0;'/>"
+            f"<span style='color: #374151;'><strong>Type:</strong> {row['Raw_Type']} ({cat})</span><br/>"
+            f"<span style='color: #374151;'><strong>Level:</strong> {level}</span><br/>"
+            f"<span style='color: #374151;'><strong>Qty:</strong> {row['Quantity']} {row['Unit']}</span>"
             f"</div>"
         )
-        tooltip_safe = html_content.replace("\n", "").replace("\r", "")
+        tooltip_safe = html_content.replace("\n", " ").replace("\r", " ").strip()
 
         G.add_node(
             comp, 
@@ -189,7 +189,16 @@ def build_network(df):
             if parent_level in stack:
                 parent = stack[parent_level]
                 w = 1 + np.log1p(row['Quantity']) if row['Quantity'] > 0 else 1
-                G.add_edge(parent, comp, width=w, color="#CBD5E1") 
+                
+                # Edge tooltip
+                edge_tooltip = (
+                    f"<div style='font-family: Arial, sans-serif; font-size: 12px; padding: 6px; color: #1a1a1a; background: white; border-radius: 4px;'>"
+                    f"<strong style='color: #2563eb;'>{parent} → {comp}</strong><br/>"
+                    f"<span style='color: #374151;'><strong>Quantity:</strong> {row['Quantity']} {row['Unit']}</span>"
+                    f"</div>"
+                ).replace("\n", " ").replace("\r", " ").strip()
+                
+                G.add_edge(parent, comp, width=w, color="#CBD5E1", title=edge_tooltip) 
     
     return G
 
@@ -262,7 +271,7 @@ if df is not None:
     
     net.from_nx(G)
     
-    # --- HIGHLIGHT OPTIONS (Orange) ---
+    # --- ENHANCED HIGHLIGHT OPTIONS (Yellow/Orange for better visibility) ---
     net.set_options("""
     {
       "nodes": {
@@ -270,26 +279,32 @@ if df is not None:
         "color": {
             "highlight": {
                 "border": "#D97706",
-                "background": "#F59E0B"
+                "background": "#FCD34D"
             },
             "hover": {
-                "border": "#D97706",
-                "background": "#F59E0B"
+                "border": "#F59E0B",
+                "background": "#FDE68A"
             }
-        }
+        },
+        "borderWidth": 2,
+        "borderWidthSelected": 4
       },
       "edges": {
         "color": { 
             "color": "#CBD5E1", 
             "highlight": "#F59E0B",
-            "hover": "#F59E0B"
+            "hover": "#FCD34D"
         },
+        "width": 2,
+        "selectionWidth": 4,
+        "hoverWidth": 3,
         "smooth": { "type": "cubicBezier", "forceDirection": "horizontal", "roundness": 0.4 }
       },
       "interaction": {
         "hover": true,
         "tooltipDelay": 50,
-        "hideEdgesOnDrag": false
+        "hideEdgesOnDrag": false,
+        "hoverConnectedEdges": true
       },
       "layout": {
         "hierarchical": {
